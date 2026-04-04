@@ -179,7 +179,7 @@ function buildVtt(entries) {
 
 function srtToVtt(srt) {
   let vtt = 'WEBVTT\n\n';
-  vtt += srt.replace(/\r\n/g, '\n').replace(/(\d{2}):(\d{2}):(\d{2}),(\d{3})/g, '$1:$2:$3.$4').replace(/^\d+\n/gm, '');
+  vtt += srt.replace(/\r\n/g, '\n').replace(/(\d{2}):(\d{2}):(\d{2}),(\d{3})/g, '$1:$2:$3.$4').replace(/^\d+\n(?=\d{2}:\d{2}:\d{2})/gm, '');
   return vtt;
 }
 

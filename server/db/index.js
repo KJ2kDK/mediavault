@@ -146,4 +146,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_logs_level  ON error_logs(level, created_at DESC);
 `);
 
+// ── Users ────────────────────────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    username   TEXT    NOT NULL UNIQUE,
+    password   TEXT    NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+`);
+
 export default db;

@@ -34,6 +34,7 @@ const DEFAULT_CONFIG = {
     { id: '1', name: 'TorrentFreak', url: 'https://torrentfreak.com/feed/', enabled: true },
     { id: '2', name: 'Ars Technica', url: 'https://feeds.arstechnica.com/arstechnica/index', enabled: true },
   ],
+  predb: { enabled: true, pageSize: 25 },
 };
 
 export function ConfigProvider({ children }) {
@@ -51,6 +52,7 @@ export function ConfigProvider({ children }) {
           vodBookmarks: parsed.iptv?.vodBookmarks ?? [],
           supplementalEpgUrls: parsed.iptv?.supplementalEpgUrls ?? [],
         },
+        predb: { ...DEFAULT_CONFIG.predb, ...parsed.predb },
       };
     } catch {
       return DEFAULT_CONFIG;

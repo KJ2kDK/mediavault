@@ -1,6 +1,27 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useConfig } from '../hooks/useConfig';
 
+// Extract clean title from scene release name (e.g. "Fire.Force.S03E25.1080p.WEB.H264-SKYANiME" → "Fire Force")
+function parseTitle(name) {
+  if (!name) return '';
+  // Cut at common scene tokens
+  const cut = name.replace(/[-.](?:S\d{2}E?\d{0,2}|[12]\d{3}|720p|1080p|2160p|4K|WEB|BluRay|BDRip|DVDRip|HDTV|REMASTERED|PROPER|REPACK|iNTERNAL|MULTi|GERMAN|FRENCH|iTALiAN|SPANiSH|DANiSH|NORWEGiAN|POLISH|DUTCH|FiNNiSH|SWEDiSH|DL|FS|WEBRiP|x264|x265|H264|H265|HEVC|XViD|AAC|AC3|DTS|FLAC|MP4|MKV|AVI)[\s.].*/i, '');
+  return cut.replace(/\./g, ' ').trim();
+}
+
+function mediaSearchLinks(name, media) {
+  const title = parseTitle(name);
+  if (!title) return [];
+  const q = encodeURIComponent(title);
+  const links = [];
+  if (media?.url) links.push({ label: 'IMDB', url: media.url, color: 'text-yellow-500' });
+  else links.push({ label: 'IMDB', url: `https://www.imdb.com/find/?q=${q}`, color: 'text-yellow-500' });
+  links.push({ label: 'TMDB', url: `https://www.themoviedb.org/search?query=${q}`, color: 'text-sky-400' });
+  links.push({ label: 'Trailer', url: `https://www.youtube.com/results?search_query=${q}+trailer`, color: 'text-red-400' });
+  links.push({ label: 'Google', url: `https://www.google.com/search?q=${q}`, color: 'text-green-400' });
+  return links;
+}
+
 const DEMO_NEWS = [
   { id: 'n1', title: 'Major Streaming Platform Announces Price Increase', source: 'TorrentFreak', date: '2h ago', category: 'Streaming', snippet: 'The latest round of price hikes targets premium tier subscribers across multiple regions.' },
   { id: 'n2', title: 'New Linux Kernel Release Brings Significant Performance Gains', source: 'Ars Technica', date: '4h ago', category: 'Tech', snippet: 'Kernel 6.9 introduces optimizations for NVMe storage and network stack improvements.' },
@@ -37,8 +58,45 @@ export default function NewsPage() {
   const [refreshInterval, setRefreshInterval] = useState(
     () => Number(localStorage.getItem('rss_refresh_interval') ?? 15)
   );
+  // ── PreDB state ─────────────────────────────────────────────────────────────
+  const [activeView, setActiveView]       = useState('rss'); // 'rss' | 'predb'
+  const [predbReleases, setPredbReleases] = useState([]);
+  const [predbLoading, setPredbLoading]   = useState(false);
+  const [predbTotal, setPredbTotal]       = useState(0);
+  const [predbPage, setPredbPage]         = useState(1);
+  const [predbSearch, setPredbSearch]     = useState('');
+  const [predbCat, setPredbCat]           = useState('');
+  const [predbStats, setPredbStats]       = useState(null);
+  const [selectedRelease, setSelectedRelease] = useState(null);
+  const [predbCatFilters, setPredbCatFilters] = useState({}); // { catName: false } = hidden
+
+  // ── PreDB.net state ────────────────────────────────────────────────────────
+  const [pnetReleases, setPnetReleases]     = useState([]);
+  const [pnetLoading, setPnetLoading]       = useState(false);
+  const [pnetTotal, setPnetTotal]           = useState(0);
+  const [pnetPage, setPnetPage]             = useState(1);
+  const [pnetSearch, setPnetSearch]         = useState('');
+  const [pnetCat, setPnetCat]               = useState('');
+  const [pnetCatFilters, setPnetCatFilters] = useState({});
+  const [selectedPnet, setSelectedPnet]     = useState(null);
+  const [nfoData, setNfoData]               = useState({}); // { releaseName: string|null }
+  const [nfoLoading, setNfoLoading]         = useState(null);
+
   const searchTimer = useRef(null);
   const refreshTimer = useRef(null);
+  const predbTimer = useRef(null);
+  const pnetTimer = useRef(null);
+
+  const PREDB_CATS = [
+    { label: 'All', value: '' },
+    { label: 'TV', value: 'TV' },
+    { label: 'Movies', value: 'MOVIES' },
+    { label: 'Music', value: 'FLAC' },
+    { label: 'Games', value: 'GAMES' },
+    { label: 'Apps', value: '0DAY' },
+    { label: 'Ebooks', value: 'EBOOK' },
+    { label: 'XXX', value: 'XXX' },
+  ];
 
   const sources = ['All', ...config.rssFeeds.map((f) => f.name)];
 
@@ -61,6 +119,155 @@ export default function NewsPage() {
     setRefreshInterval(mins);
     localStorage.setItem('rss_refresh_interval', String(mins));
   };
+
+  // ── PreDB fetching ────────────────────────────────────────────────────────
+  const fetchPredb = async (page = predbPage, search = predbSearch, cat = predbCat) => {
+    setPredbLoading(true);
+    try {
+      const params = new URLSearchParams({ count: '25', page: String(page) });
+      if (search.trim()) params.set('q', search.trim());
+      if (cat) params.set('cat', cat);
+      const res = await fetch(`/api/predb/releases?${params}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setPredbReleases(data.releases || []);
+      setPredbTotal(data.total || 0);
+      setPredbPage(data.page || page);
+    } catch { setPredbReleases([]); }
+    finally { setPredbLoading(false); }
+  };
+
+  const fetchPredbStats = async () => {
+    try {
+      const res = await fetch('/api/predb/stats');
+      const data = await res.json();
+      if (!data.error) setPredbStats(data);
+    } catch { /* silent */ }
+  };
+
+  // Fetch predb on view switch or mount
+  useEffect(() => {
+    if (activeView === 'predb' && predbReleases.length === 0) {
+      fetchPredb(1);
+      fetchPredbStats();
+    }
+  }, [activeView]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // PreDB auto-refresh
+  useEffect(() => {
+    clearInterval(predbTimer.current);
+    if (activeView === 'predb' && refreshInterval > 0) {
+      predbTimer.current = setInterval(() => fetchPredb(), refreshInterval * 60 * 1000);
+    }
+    return () => clearInterval(predbTimer.current);
+  }, [activeView, refreshInterval]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handlePredbSearch = (val) => {
+    setPredbSearch(val);
+    clearTimeout(searchTimer.current);
+    if (!val.trim()) { searchTimer.current = setTimeout(() => fetchPredb(1, '', predbCat), 100); return; }
+    searchTimer.current = setTimeout(() => fetchPredb(1, val, predbCat), 350);
+  };
+
+  const handlePredbCat = (cat) => {
+    setPredbCat(cat);
+    setPredbPage(1);
+    fetchPredb(1, predbSearch, cat);
+  };
+
+  const totalPredbPages = Math.max(1, Math.ceil(predbTotal / 25));
+
+  // Unique categories from loaded releases + client-side filtering
+  const predbUniqueCats = useMemo(() => {
+    const cats = new Set();
+    for (const r of predbReleases) if (r.cat) cats.add(r.cat);
+    return [...cats].sort();
+  }, [predbReleases]);
+
+  const filteredPredb = useMemo(() => {
+    const hasFilters = Object.values(predbCatFilters).some((v) => v === false);
+    if (!hasFilters) return predbReleases;
+    return predbReleases.filter((r) => predbCatFilters[r.cat] !== false);
+  }, [predbReleases, predbCatFilters]);
+
+  // ── PreDB.net fetching ─────────────────────────────────────────────────────
+  const PNET_CATS = [
+    { label: 'All', value: '' },
+    { label: 'TV', value: 'TV' },
+    { label: 'Movies', value: 'X264' },
+    { label: 'Music', value: 'MP3' },
+    { label: 'Games', value: 'GAMES' },
+    { label: 'Apps', value: '0DAY' },
+    { label: 'Ebooks', value: 'EBOOK' },
+    { label: 'XXX', value: 'XXX' },
+  ];
+
+  const fetchPnet = async (page = pnetPage, search = pnetSearch, cat = pnetCat) => {
+    setPnetLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: '25', page: String(page) });
+      if (search.trim()) params.set('q', search.trim());
+      if (cat) params.set('section', cat);
+      const res = await fetch(`/api/predbnet/releases?${params}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setPnetReleases(data.releases || []);
+      setPnetTotal(data.total || 0);
+      setPnetPage(data.page || page);
+    } catch { setPnetReleases([]); }
+    finally { setPnetLoading(false); }
+  };
+
+  const fetchNfo = async (releaseName) => {
+    if (nfoData[releaseName] !== undefined) return;
+    setNfoLoading(releaseName);
+    try {
+      const res = await fetch(`/api/predbnet/nfo?name=${encodeURIComponent(releaseName)}`);
+      const data = await res.json();
+      setNfoData((prev) => ({ ...prev, [releaseName]: data.nfo || null }));
+    } catch {
+      setNfoData((prev) => ({ ...prev, [releaseName]: null }));
+    } finally { setNfoLoading(null); }
+  };
+
+  useEffect(() => {
+    if (activeView === 'pnet' && pnetReleases.length === 0) fetchPnet(1);
+  }, [activeView]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    clearInterval(pnetTimer.current);
+    if (activeView === 'pnet' && refreshInterval > 0) {
+      pnetTimer.current = setInterval(() => fetchPnet(), refreshInterval * 60 * 1000);
+    }
+    return () => clearInterval(pnetTimer.current);
+  }, [activeView, refreshInterval]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handlePnetSearch = (val) => {
+    setPnetSearch(val);
+    clearTimeout(searchTimer.current);
+    if (!val.trim()) { searchTimer.current = setTimeout(() => fetchPnet(1, '', pnetCat), 100); return; }
+    searchTimer.current = setTimeout(() => fetchPnet(1, val, pnetCat), 350);
+  };
+
+  const handlePnetCat = (cat) => {
+    setPnetCat(cat);
+    setPnetPage(1);
+    fetchPnet(1, pnetSearch, cat);
+  };
+
+  const totalPnetPages = Math.max(1, Math.ceil(pnetTotal / 25));
+
+  const pnetUniqueCats = useMemo(() => {
+    const cats = new Set();
+    for (const r of pnetReleases) if (r.cat) cats.add(r.cat);
+    return [...cats].sort();
+  }, [pnetReleases]);
+
+  const filteredPnet = useMemo(() => {
+    const hasFilters = Object.values(pnetCatFilters).some((v) => v === false);
+    if (!hasFilters) return pnetReleases;
+    return pnetReleases.filter((r) => pnetCatFilters[r.cat] !== false);
+  }, [pnetReleases, pnetCatFilters]);
 
   // Apply source + category filters
   const filtered = useMemo(() => {
@@ -194,8 +401,30 @@ export default function NewsPage() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <div className="px-6 py-4 border-b border-vault-border flex items-center justify-between">
-          <div className="flex gap-2 overflow-x-auto carousel-row">
-            {sources.map((s) => (
+          <div className="flex items-center gap-3 overflow-x-auto carousel-row">
+            {/* View toggle */}
+            <div className="flex rounded-lg border border-vault-border overflow-hidden shrink-0">
+              <button
+                onClick={() => setActiveView('rss')}
+                className={`px-3 py-1.5 text-xs font-medium transition-all ${activeView === 'rss' ? 'bg-vault-accent text-white' : 'bg-vault-card text-vault-muted hover:text-vault-text'}`}
+              >
+                RSS Feeds
+              </button>
+              <button
+                onClick={() => setActiveView('predb')}
+                className={`px-3 py-1.5 text-xs font-medium transition-all ${activeView === 'predb' ? 'bg-vault-accent text-white' : 'bg-vault-card text-vault-muted hover:text-vault-text'}`}
+              >
+                PreDB.club
+              </button>
+              <button
+                onClick={() => setActiveView('pnet')}
+                className={`px-3 py-1.5 text-xs font-medium transition-all ${activeView === 'pnet' ? 'bg-vault-accent text-white' : 'bg-vault-card text-vault-muted hover:text-vault-text'}`}
+              >
+                PreDB.net
+              </button>
+            </div>
+            {/* RSS source tabs (only when RSS view active) */}
+            {activeView === 'rss' && sources.map((s) => (
               <button
                 key={s}
                 onClick={() => setActiveSource(s)}
@@ -206,6 +435,33 @@ export default function NewsPage() {
                 }`}
               >
                 {s}
+              </button>
+            ))}
+            {/* Category chips for scene release views */}
+            {activeView === 'predb' && PREDB_CATS.map((c) => (
+              <button
+                key={c.value}
+                onClick={() => handlePredbCat(c.value)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
+                  predbCat === c.value
+                    ? 'bg-vault-accent text-white'
+                    : 'bg-vault-card text-vault-muted hover:text-vault-text border border-vault-border'
+                }`}
+              >
+                {c.label}
+              </button>
+            ))}
+            {activeView === 'pnet' && PNET_CATS.map((c) => (
+              <button
+                key={c.value}
+                onClick={() => handlePnetCat(c.value)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
+                  pnetCat === c.value
+                    ? 'bg-vault-accent text-white'
+                    : 'bg-vault-card text-vault-muted hover:text-vault-text border border-vault-border'
+                }`}
+              >
+                {c.label}
               </button>
             ))}
           </div>
@@ -230,35 +486,45 @@ export default function NewsPage() {
               </svg>
               <input
                 type="text"
-                value={searchQuery}
-                onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search history..."
+                value={activeView === 'rss' ? searchQuery : activeView === 'predb' ? predbSearch : pnetSearch}
+                onChange={(e) => {
+                  if (activeView === 'rss') handleSearchChange(e.target.value);
+                  else if (activeView === 'predb') handlePredbSearch(e.target.value);
+                  else handlePnetSearch(e.target.value);
+                }}
+                placeholder={activeView === 'rss' ? 'Search history...' : 'Search releases...'}
                 className="pl-7 pr-3 py-1.5 rounded-lg bg-vault-card border border-vault-border text-xs text-vault-text placeholder:text-vault-muted/60 focus:outline-none focus:border-vault-accent/50 w-44"
               />
-              {searchQuery && (
-                <button onClick={() => { setSearchQuery(''); setSearchResults(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 text-vault-muted hover:text-vault-text">
+              {(activeView === 'rss' ? searchQuery : activeView === 'predb' ? predbSearch : pnetSearch) && (
+                <button onClick={() => {
+                  if (activeView === 'rss') { setSearchQuery(''); setSearchResults(null); }
+                  else if (activeView === 'predb') { setPredbSearch(''); fetchPredb(1, '', predbCat); }
+                  else { setPnetSearch(''); fetchPnet(1, '', pnetCat); }
+                }} className="absolute right-2 top-1/2 -translate-y-1/2 text-vault-muted hover:text-vault-text">
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               )}
             </div>
             <button
-              onClick={fetchFeeds}
+              onClick={() => activeView === 'rss' ? fetchFeeds() : activeView === 'predb' ? fetchPredb(1) : fetchPnet(1)}
               className="p-2 rounded-lg text-vault-muted hover:text-vault-text hover:bg-vault-card transition-colors"
-              title="Refresh feeds"
+              title="Refresh"
             >
-              <svg className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <svg className={`w-4 h-4 ${(activeView === 'rss' ? loading : activeView === 'predb' ? predbLoading : pnetLoading) ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
               </svg>
             </button>
-            <button
-              onClick={() => setShowAddFeed(!showAddFeed)}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-vault-teal/15 text-vault-teal hover:bg-vault-teal/25 transition-colors"
-            >
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-              </svg>
-              Add Feed
-            </button>
+            {activeView === 'rss' && (
+              <button
+                onClick={() => setShowAddFeed(!showAddFeed)}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-vault-teal/15 text-vault-teal hover:bg-vault-teal/25 transition-colors"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                </svg>
+                Add Feed
+              </button>
+            )}
           </div>
         </div>
 
@@ -300,89 +566,429 @@ export default function NewsPage() {
           </div>
         )}
 
-        {/* Articles */}
+        {/* Content area */}
         <div className="flex-1 overflow-y-auto p-6 space-y-3">
-          {searchResults !== null && (
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs text-vault-muted">{searchLoading ? 'Searching…' : `${searchResults.length} results for "${searchQuery}"`}</span>
-            </div>
-          )}
-          {(searchResults ?? filtered).length === 0 && !loading && !searchLoading && (
-            <div className="text-center text-vault-muted text-sm py-16">
-              {searchResults !== null ? 'No results found.' : news === DEMO_NEWS ? 'Add a feed and click refresh to load articles.' : 'No articles match the selected categories.'}
-            </div>
-          )}
-          {(searchResults ?? filtered).map((article) => (
-            <article
-              key={article.id}
-              onClick={() => setSelectedArticle(selectedArticle?.id === article.id ? null : article)}
-              className={`p-4 rounded-lg border transition-all cursor-pointer ${
-                selectedArticle?.id === article.id
-                  ? 'bg-vault-card border-vault-accent/30'
-                  : 'bg-vault-surface/50 border-vault-border hover:bg-vault-card hover:border-vault-border'
-              }`}
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-vault-teal">{article.source}</span>
-                    <span className="text-[10px] text-vault-muted">•</span>
-                    <span className="text-[10px] text-vault-muted">{article.date}</span>
-                    {article.category && (
-                      <>
+          {activeView === 'rss' ? (
+            <>
+              {searchResults !== null && (
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs text-vault-muted">{searchLoading ? 'Searching…' : `${searchResults.length} results for "${searchQuery}"`}</span>
+                </div>
+              )}
+              {(searchResults ?? filtered).length === 0 && !loading && !searchLoading && (
+                <div className="text-center text-vault-muted text-sm py-16">
+                  {searchResults !== null ? 'No results found.' : news === DEMO_NEWS ? 'Add a feed and click refresh to load articles.' : 'No articles match the selected categories.'}
+                </div>
+              )}
+              {(searchResults ?? filtered).map((article) => (
+                <article
+                  key={article.id}
+                  onClick={() => setSelectedArticle(selectedArticle?.id === article.id ? null : article)}
+                  className={`p-4 rounded-lg border transition-all cursor-pointer ${
+                    selectedArticle?.id === article.id
+                      ? 'bg-vault-card border-vault-accent/30'
+                      : 'bg-vault-surface/50 border-vault-border hover:bg-vault-card hover:border-vault-border'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-vault-teal">{article.source}</span>
                         <span className="text-[10px] text-vault-muted">•</span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-vault-card text-vault-muted">{article.category}</span>
-                      </>
+                        <span className="text-[10px] text-vault-muted">{article.date}</span>
+                        {article.category && (
+                          <>
+                            <span className="text-[10px] text-vault-muted">•</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-vault-card text-vault-muted">{article.category}</span>
+                          </>
+                        )}
+                      </div>
+                      <h3 className="text-sm font-medium text-vault-text leading-snug">{article.title}</h3>
+                      {article.snippet && (
+                        <p className="text-xs text-vault-muted mt-1 line-clamp-2">{article.snippet}</p>
+                      )}
+                      {selectedArticle?.id === article.id && article.link && (
+                        <a
+                          href={article.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-block mt-2 text-[10px] text-vault-teal hover:underline"
+                        >
+                          Open article →
+                        </a>
+                      )}
+                    </div>
+                    {article.torrentUrl && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleSendToDownloads(article); }}
+                        disabled={!!sentIds[article.id] || sendingId === article.id}
+                        title={sentIds[article.id] ? 'Already sent to qBittorrent' : 'Send to qBittorrent'}
+                        className={`shrink-0 p-2 rounded-lg transition-colors ${
+                          sentIds[article.id]
+                            ? 'text-green-500 bg-green-500/10 cursor-default'
+                            : sendingId === article.id
+                              ? 'text-vault-muted animate-pulse cursor-wait'
+                              : 'text-vault-muted hover:text-vault-accent hover:bg-vault-accent/10'
+                        }`}
+                      >
+                        {sentIds[article.id] ? (
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                        )}
+                      </button>
                     )}
                   </div>
-                  <h3 className="text-sm font-medium text-vault-text leading-snug">{article.title}</h3>
-                  {article.snippet && (
-                    <p className="text-xs text-vault-muted mt-1 line-clamp-2">{article.snippet}</p>
-                  )}
-                  {selectedArticle?.id === article.id && article.link && (
-                    <a
-                      href={article.link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="inline-block mt-2 text-[10px] text-vault-teal hover:underline"
-                    >
-                      Open article →
-                    </a>
-                  )}
-                </div>
-                {article.torrentUrl && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleSendToDownloads(article); }}
-                    disabled={!!sentIds[article.id] || sendingId === article.id}
-                    title={sentIds[article.id] ? 'Already sent to qBittorrent' : 'Send to qBittorrent'}
-                    className={`shrink-0 p-2 rounded-lg transition-colors ${
-                      sentIds[article.id]
-                        ? 'text-green-500 bg-green-500/10 cursor-default'
-                        : sendingId === article.id
-                          ? 'text-vault-muted animate-pulse cursor-wait'
-                          : 'text-vault-muted hover:text-vault-accent hover:bg-vault-accent/10'
+                </article>
+              ))}
+            </>
+          ) : activeView === 'predb' ? (
+            <>
+              {/* PreDB releases */}
+              {predbLoading && predbReleases.length === 0 && (
+                <div className="text-center text-vault-muted text-sm py-16">Loading releases...</div>
+              )}
+              {!predbLoading && filteredPredb.length === 0 && (
+                <div className="text-center text-vault-muted text-sm py-16">No releases found.</div>
+              )}
+              {filteredPredb.map((rel) => {
+                const isOpen = selectedRelease === rel.id;
+                return (
+                  <article
+                    key={rel.id}
+                    onClick={() => setSelectedRelease(isOpen ? null : rel.id)}
+                    className={`p-4 rounded-lg border transition-all cursor-pointer ${
+                      isOpen
+                        ? 'bg-vault-card border-vault-accent/30'
+                        : 'bg-vault-surface/50 border-vault-border hover:bg-vault-card hover:border-vault-border'
                     }`}
                   >
-                    {sentIds[article.id] ? (
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                      </svg>
-                    ) : (
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                      </svg>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-[10px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-vault-teal/15 text-vault-teal">{rel.cat}</span>
+                      <span className="text-[10px] text-vault-muted">•</span>
+                      <span className="text-[10px] text-vault-muted">{rel.time}</span>
+                      {rel.team && (
+                        <>
+                          <span className="text-[10px] text-vault-muted">•</span>
+                          <span className="text-[10px] text-vault-muted">Group: <span className="text-vault-text font-medium">{rel.team}</span></span>
+                        </>
+                      )}
+                      {rel.nuke && (
+                        <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-red-500/20 text-red-400" title={rel.nuke.reason || ''}>
+                          {rel.nuke.type || 'NUKED'}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm font-medium text-vault-text font-mono leading-snug break-all">{rel.name}</p>
+                    {/* Expanded details */}
+                    {isOpen && (
+                      <div className="mt-3 pt-3 border-t border-vault-border/50 space-y-2">
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                          {rel.size && (
+                            <span className="text-[11px] text-vault-muted">Size: <span className="text-vault-text">{rel.size}</span></span>
+                          )}
+                          {rel.files > 0 && (
+                            <span className="text-[11px] text-vault-muted">Files: <span className="text-vault-text">{rel.files}</span></span>
+                          )}
+                          <span className="text-[11px] text-vault-muted">Category: <span className="text-vault-text">{rel.cat}</span></span>
+                          {rel.team && (
+                            <span className="text-[11px] text-vault-muted">Group: <span className="text-vault-text">{rel.team}</span></span>
+                          )}
+                          {rel.preAt && (
+                            <span className="text-[11px] text-vault-muted">Pre: <span className="text-vault-text">{new Date(rel.preAt * 1000).toLocaleString()}</span></span>
+                          )}
+                        </div>
+                        {rel.media && (
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            {rel.media.rating && <span className="text-[11px] text-yellow-500 font-medium">IMDB {rel.media.rating}/10</span>}
+                            {rel.media.year && <span className="text-[11px] text-vault-muted">{rel.media.year}</span>}
+                            {rel.media.genre && <span className="text-[11px] text-vault-muted">{rel.media.genre}</span>}
+                            {rel.media.url && (
+                              <a href={rel.media.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-[11px] text-vault-teal hover:underline">
+                                View on IMDB →
+                              </a>
+                            )}
+                          </div>
+                        )}
+                        {rel.nuke?.reason && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">{rel.nuke.type || 'NUKED'}</span>
+                            <span className="text-[11px] text-red-400/80 italic">{rel.nuke.reason}</span>
+                          </div>
+                        )}
+                        <a
+                          href={`https://predb.club/?id=${rel.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-block text-[10px] text-vault-teal hover:underline"
+                        >
+                          View on PreDB →
+                        </a>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-[10px] text-vault-muted">Find on:</span>
+                          {mediaSearchLinks(rel.name, rel.media).map((l) => (
+                            <a key={l.label} href={l.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className={`text-[10px] ${l.color} hover:underline`}>
+                              {l.label}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
                     )}
+                  </article>
+                );
+              })}
+              {/* Pagination */}
+              {predbTotal > 25 && (
+                <div className="flex items-center justify-center gap-4 pt-4 pb-2">
+                  <button
+                    onClick={() => { const p = Math.max(1, predbPage - 1); setPredbPage(p); fetchPredb(p); }}
+                    disabled={predbPage <= 1}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-vault-card border border-vault-border text-vault-muted hover:text-vault-text disabled:opacity-30 disabled:cursor-default transition-colors"
+                  >
+                    Prev
                   </button>
-                )}
-              </div>
-            </article>
-          ))}
+                  <span className="text-xs text-vault-muted">Page {predbPage} of {totalPredbPages}</span>
+                  <button
+                    onClick={() => { const p = Math.min(totalPredbPages, predbPage + 1); setPredbPage(p); fetchPredb(p); }}
+                    disabled={predbPage >= totalPredbPages}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-vault-card border border-vault-border text-vault-muted hover:text-vault-text disabled:opacity-30 disabled:cursor-default transition-colors"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </>
+          ) : activeView === 'pnet' ? (
+            <>
+              {/* PreDB.net releases */}
+              {pnetLoading && pnetReleases.length === 0 && (
+                <div className="text-center text-vault-muted text-sm py-16">Loading releases...</div>
+              )}
+              {!pnetLoading && filteredPnet.length === 0 && (
+                <div className="text-center text-vault-muted text-sm py-16">No releases found.</div>
+              )}
+              {filteredPnet.map((rel) => {
+                const isOpen = selectedPnet === rel.id;
+                return (
+                  <article
+                    key={rel.id}
+                    onClick={() => { setSelectedPnet(isOpen ? null : rel.id); if (!isOpen) fetchNfo(rel.name); }}
+                    className={`p-4 rounded-lg border transition-all cursor-pointer ${
+                      isOpen
+                        ? 'bg-vault-card border-vault-accent/30'
+                        : 'bg-vault-surface/50 border-vault-border hover:bg-vault-card hover:border-vault-border'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-[10px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-vault-teal/15 text-vault-teal">{rel.cat}</span>
+                      <span className="text-[10px] text-vault-muted">{rel.time}</span>
+                      {rel.team && (
+                        <>
+                          <span className="text-[10px] text-vault-muted">•</span>
+                          <span className="text-[10px] text-vault-muted">Group: <span className="text-vault-text font-medium">{rel.team}</span></span>
+                        </>
+                      )}
+                      {rel.genre && (
+                        <>
+                          <span className="text-[10px] text-vault-muted">•</span>
+                          <span className="text-[10px] text-vault-muted">{rel.genre}</span>
+                        </>
+                      )}
+                      {rel.nuke && (
+                        <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-red-500/20 text-red-400" title={rel.nuke.reason || ''}>
+                          {rel.nuke.type}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm font-medium text-vault-text font-mono leading-snug break-all">{rel.name}</p>
+                    {isOpen && (
+                      <div className="mt-3 pt-3 border-t border-vault-border/50 space-y-2">
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                          {rel.size && <span className="text-[11px] text-vault-muted">Size: <span className="text-vault-text">{rel.size}</span></span>}
+                          {rel.files > 0 && <span className="text-[11px] text-vault-muted">Files: <span className="text-vault-text">{rel.files}</span></span>}
+                          <span className="text-[11px] text-vault-muted">Section: <span className="text-vault-text">{rel.cat}</span></span>
+                          {rel.preAt && <span className="text-[11px] text-vault-muted">Pre: <span className="text-vault-text">{new Date(rel.preAt * 1000).toLocaleString()}</span></span>}
+                        </div>
+                        {rel.nuke?.reason && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">{rel.nuke.type}</span>
+                            <span className="text-[11px] text-red-400/80 italic">{rel.nuke.reason}</span>
+                          </div>
+                        )}
+                        {/* NFO viewer */}
+                        {nfoLoading === rel.name && (
+                          <p className="text-[11px] text-vault-muted italic">Loading NFO...</p>
+                        )}
+                        {nfoData[rel.name] && (
+                          <div className="mt-2">
+                            <p className="text-[10px] text-vault-muted uppercase tracking-wider font-semibold mb-1">NFO</p>
+                            <pre className="bg-vault-bg border border-vault-border rounded p-3 text-[10px] text-vault-text font-mono overflow-x-auto max-h-80 overflow-y-auto whitespace-pre leading-tight">{nfoData[rel.name]}</pre>
+                          </div>
+                        )}
+                        {nfoData[rel.name] === null && nfoLoading !== rel.name && (
+                          <p className="text-[10px] text-vault-muted italic">No NFO available</p>
+                        )}
+                        {rel.url && (
+                          <a
+                            href={rel.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-block text-[10px] text-vault-teal hover:underline"
+                          >
+                            View on PreDB.net →
+                          </a>
+                        )}
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-[10px] text-vault-muted">Find on:</span>
+                          {mediaSearchLinks(rel.name, null).map((l) => (
+                            <a key={l.label} href={l.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className={`text-[10px] ${l.color} hover:underline`}>
+                              {l.label}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+              {pnetTotal > 25 && (
+                <div className="flex items-center justify-center gap-4 pt-4 pb-2">
+                  <button
+                    onClick={() => { const p = Math.max(1, pnetPage - 1); setPnetPage(p); fetchPnet(p); }}
+                    disabled={pnetPage <= 1}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-vault-card border border-vault-border text-vault-muted hover:text-vault-text disabled:opacity-30 disabled:cursor-default transition-colors"
+                  >
+                    Prev
+                  </button>
+                  <span className="text-xs text-vault-muted">Page {pnetPage} of {totalPnetPages}</span>
+                  <button
+                    onClick={() => { const p = Math.min(totalPnetPages, pnetPage + 1); setPnetPage(p); fetchPnet(p); }}
+                    disabled={pnetPage >= totalPnetPages}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-vault-card border border-vault-border text-vault-muted hover:text-vault-text disabled:opacity-30 disabled:cursor-default transition-colors"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </>
+          ) : null}
         </div>
       </div>
 
-      {/* Managed feeds + category filter panel */}
+      {/* Sidebar */}
       <div className="w-64 shrink-0 border-l border-vault-border bg-vault-surface/50 flex flex-col">
+        {activeView === 'pnet' ? (
+          <>
+            <div className="px-4 py-3 border-b border-vault-border">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-vault-muted">PreDB.net</h3>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-3">
+              <div className="text-[10px] text-vault-muted space-y-1">
+                <p>Scene releases with NFO support.</p>
+                <p>Click a release to view details and NFO.</p>
+              </div>
+              {pnetTotal > 0 && (
+                <div className="pt-2 border-t border-vault-border">
+                  <p className="text-[10px] text-vault-muted">{pnetTotal.toLocaleString()} results{pnetCat ? ` in ${pnetCat}` : ''}{pnetSearch ? ` for "${pnetSearch}"` : ''}</p>
+                </div>
+              )}
+              {pnetUniqueCats.length > 0 && (
+                <div className="pt-2 border-t border-vault-border">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-[10px] text-vault-muted uppercase tracking-wider font-semibold">Categories</p>
+                    <div className="flex gap-2">
+                      <button onClick={() => setPnetCatFilters({})} className="text-[10px] text-vault-teal hover:underline">All</button>
+                      <button onClick={() => { const f = {}; pnetUniqueCats.forEach((c) => f[c] = false); setPnetCatFilters(f); }} className="text-[10px] text-vault-muted hover:underline">None</button>
+                    </div>
+                  </div>
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {pnetUniqueCats.map((cat) => (
+                      <label key={cat} className="flex items-center gap-2 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={pnetCatFilters[cat] !== false}
+                          onChange={() => setPnetCatFilters((prev) => ({ ...prev, [cat]: prev[cat] === false ? true : false }))}
+                          className="w-3 h-3 rounded accent-vault-teal cursor-pointer"
+                        />
+                        <span className="text-[11px] text-vault-text group-hover:text-white transition-colors truncate">{cat}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        ) : activeView === 'predb' ? (
+          <>
+            <div className="px-4 py-3 border-b border-vault-border">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-vault-muted">PreDB Stats</h3>
+            </div>
+            <div className="p-3 space-y-3">
+              {predbStats ? (
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { label: 'Today', value: predbStats.today?.toLocaleString() },
+                    { label: 'This Week', value: predbStats.week?.toLocaleString() },
+                    { label: 'This Month', value: predbStats.month?.toLocaleString() },
+                    { label: 'Total', value: predbStats.total?.toLocaleString() },
+                  ].map((s) => (
+                    <div key={s.label} className="p-2 rounded-lg bg-vault-card border border-vault-border text-center">
+                      <p className="text-sm font-bold text-vault-text">{s.value}</p>
+                      <p className="text-[10px] text-vault-muted uppercase tracking-wider">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-vault-muted">Loading stats...</p>
+              )}
+              <div className="pt-2 border-t border-vault-border">
+                <p className="text-[10px] text-vault-muted mb-2 uppercase tracking-wider font-semibold">Search Tips</p>
+                <div className="space-y-1 text-[10px] text-vault-muted">
+                  <p><span className="text-vault-text font-mono">@team SPARKS</span> — by group</p>
+                  <p><span className="text-vault-text font-mono">@cat TV-1080P</span> — exact category</p>
+                  <p><span className="text-vault-text font-mono">fire force</span> — by name</p>
+                </div>
+              </div>
+              {predbTotal > 0 && (
+                <div className="pt-2 border-t border-vault-border">
+                  <p className="text-[10px] text-vault-muted">{predbTotal.toLocaleString()} results{predbCat ? ` in ${predbCat}` : ''}{predbSearch ? ` for "${predbSearch}"` : ''}</p>
+                </div>
+              )}
+              {predbUniqueCats.length > 0 && (
+                <div className="pt-2 border-t border-vault-border">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-[10px] text-vault-muted uppercase tracking-wider font-semibold">Categories</p>
+                    <div className="flex gap-2">
+                      <button onClick={() => setPredbCatFilters({})} className="text-[10px] text-vault-teal hover:underline">All</button>
+                      <button onClick={() => { const f = {}; predbUniqueCats.forEach((c) => f[c] = false); setPredbCatFilters(f); }} className="text-[10px] text-vault-muted hover:underline">None</button>
+                    </div>
+                  </div>
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {predbUniqueCats.map((cat) => (
+                      <label key={cat} className="flex items-center gap-2 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={predbCatFilters[cat] !== false}
+                          onChange={() => setPredbCatFilters((prev) => ({ ...prev, [cat]: prev[cat] === false ? true : false }))}
+                          className="w-3 h-3 rounded accent-vault-teal cursor-pointer"
+                        />
+                        <span className="text-[11px] text-vault-text group-hover:text-white transition-colors truncate">{cat}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
         <div className="px-4 py-3 border-b border-vault-border">
           <h3 className="text-xs font-bold uppercase tracking-widest text-vault-muted">Managed Feeds</h3>
         </div>
@@ -499,6 +1105,8 @@ export default function NewsPage() {
             );
           })}
         </div>
+          </>
+        )}
       </div>
     </div>
   );

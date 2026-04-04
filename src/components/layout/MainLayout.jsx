@@ -17,7 +17,7 @@ const PAGES = {
   settings: SettingsPage,
 };
 
-export default function MainLayout() {
+export default function MainLayout({ onLogout }) {
   const [section, setSection] = useState('home');
   const [navPayload, setNavPayload] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -38,6 +38,7 @@ export default function MainLayout() {
         onNavigate={handleNavigate}
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        onLogout={onLogout}
       />
       <div className="flex-1 flex flex-col overflow-hidden">
         <TopBar

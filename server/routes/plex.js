@@ -341,6 +341,7 @@ router.get('/stream', async (req, res) => {
         videoQuality: '100',
         maxVideoBitrate: '40000',
         audioBoost: '100',
+        subtitles: 'none',
         'X-Plex-Token': token,
         'X-Plex-Client-Identifier': 'mediavault',
         'X-Plex-Product': 'MediaVault',

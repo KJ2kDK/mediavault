@@ -75,11 +75,15 @@ router.get('/list', async (req, res) => {
       progress: Math.round(t.progress * 100),
       status: mapStatus(t.state),
       speed: formatBytes(t.dlspeed) + '/s',
+      upSpeed: formatBytes(t.upspeed) + '/s',
       eta: t.eta === 8640000 ? '∞' : formatEta(t.eta),
       seeds: t.num_seeds,
       peers: t.num_leechs,
       added: new Date(t.added_on * 1000).toLocaleString(),
       savePath: t.save_path,
+      ratio: Math.round((t.ratio || 0) * 100) / 100,
+      rawDlSpeed: t.dlspeed || 0,
+      rawUpSpeed: t.upspeed || 0,
     }));
     res.json({ torrents: mapped });
   } catch (err) {
@@ -155,7 +159,7 @@ router.post('/delete', async (req, res) => {
 function mapStatus(state) {
   const map = {
     downloading: 'downloading', forcedDL: 'downloading', stalledDL: 'downloading',
-    uploading: 'seeding', forcedUP: 'seeding', stalledUP: 'seeding',
+    uploading: 'seeding', forcedUP: 'seeding', stalledUP: 'completed',
     pausedDL: 'paused', pausedUP: 'paused',
     queuedDL: 'queued', queuedUP: 'queued',
     error: 'error', missingFiles: 'error',

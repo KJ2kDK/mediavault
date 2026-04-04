@@ -5,31 +5,33 @@
   "description": "Personal unified media hub — Plex, IPTV, News, Torrents",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node --max-http-header-size=65536 node_modules/vite/bin/vite.js",
     "build": "vite build",
     "preview": "vite preview",
-    "server": "node server/index.js",
+    "server": "node --max-http-header-size=65536 server/index.js",
     "dev:all": "concurrently \"npm run dev\" \"npm run server\""
   },
   "dependencies": {
+    "axios": "^1.7.4",
+    "better-sqlite3": "^12.8.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "hls.js": "^1.5.13",
+    "node-fetch": "^3.3.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.0",
-    "axios": "^1.7.4",
-    "hls.js": "^1.5.13",
+    "react-window": "^1.8.11",
     "rss-parser": "^3.13.0",
-    "express": "^4.19.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "xml2js": "^0.6.2",
-    "node-fetch": "^3.3.2"
+    "xml2js": "^0.6.2"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.4.0",
-    "tailwindcss": "^3.4.9",
-    "postcss": "^8.4.41",
     "autoprefixer": "^10.4.20",
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "postcss": "^8.4.41",
+    "tailwindcss": "^3.4.9",
+    "vite": "^5.4.0"
   }
 }

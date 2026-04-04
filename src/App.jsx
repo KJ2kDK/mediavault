@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import SplashScreen from './components/splash/SplashScreen';
 import MainLayout from './components/layout/MainLayout';
-import { ConfigProvider } from './hooks/useConfig';
+import { ConfigProvider } from './hooks/ConfigProvider';
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);

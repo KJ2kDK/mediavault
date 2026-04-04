@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { usePlexLibrary } from '../hooks/usePlex';
 import MediaCard from '../components/common/MediaCard';
 import CarouselRow from '../components/common/CarouselRow';
+import PlexPlayer from '../components/common/PlexPlayer';
 
 const FILTERS = ['All', 'Movies', 'TV Shows', 'Music', '4K', 'Unwatched'];
 
@@ -29,8 +30,11 @@ export default function LibraryPage({ searchQuery }) {
   const [activeFilter, setActiveFilter] = useState('All');
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
   const [sortBy, setSortBy] = useState('title'); // 'title' | 'year' | 'rating'
+  const [playingItem, setPlayingItem] = useState(null);
 
-  let items = connected ? (library?.all || []) : DEMO_ALL;
+  let items = connected
+    ? Object.values(library || {}).flat().filter((v, i, a) => a.findIndex((x) => x.id === v.id) === i)
+    : DEMO_ALL;
 
   // Filter
   if (activeFilter === 'Movies') items = items.filter((i) => i.type === 'movie');
@@ -115,7 +119,7 @@ export default function LibraryPage({ searchQuery }) {
       {viewMode === 'grid' ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4">
           {items.map((item) => (
-            <MediaCard key={item.id} item={item} size="md" />
+            <MediaCard key={item.id} item={item} size="md" onPlay={(i) => i.serverUrl ? setPlayingItem(i) : null} />
           ))}
         </div>
       ) : (
@@ -144,6 +148,9 @@ export default function LibraryPage({ searchQuery }) {
             </div>
           ))}
         </div>
+      )}
+      {playingItem && (
+        <PlexPlayer item={playingItem} onClose={() => setPlayingItem(null)} />
       )}
     </div>
   );

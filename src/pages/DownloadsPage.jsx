@@ -1,13 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useConfig } from '../hooks/useConfig';
-
-const DEMO_TORRENTS = [
-  { id: 't1', name: 'ubuntu-24.04-desktop-amd64.iso', size: '4.7 GB', progress: 100, status: 'completed', speed: '0 KB/s', eta: 'Done', seeds: 142, peers: 3, added: '2h ago' },
-  { id: 't2', name: 'libreoffice-24.2.5.iso', size: '2.1 GB', progress: 73, status: 'downloading', speed: '12.4 MB/s', eta: '3m', seeds: 89, peers: 15, added: '15m ago' },
-  { id: 't3', name: 'fedora-40-workstation.iso', size: '1.9 GB', progress: 45, status: 'downloading', speed: '8.2 MB/s', eta: '8m', seeds: 64, peers: 22, added: '30m ago' },
-  { id: 't4', name: 'debian-12.5-amd64-netinst.iso', size: '628 MB', progress: 12, status: 'downloading', speed: '3.1 MB/s', eta: '2m', seeds: 201, peers: 8, added: '5m ago' },
-  { id: 't5', name: 'archlinux-2024.03.01-x86_64.iso', size: '1.1 GB', progress: 0, status: 'queued', speed: '0 KB/s', eta: '—', seeds: 0, peers: 0, added: 'Just now' },
-];
 
 const STATUS_COLORS = {
   downloading: 'text-vault-teal',
@@ -27,24 +19,47 @@ const STATUS_BG = {
   error: 'bg-red-400/15',
 };
 
+function formatSpeed(bytes) {
+  if (!bytes || bytes < 1024) return '0 KB/s';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB/s';
+  return (bytes / 1048576).toFixed(1) + ' MB/s';
+}
+
 export default function DownloadsPage() {
   const { config } = useConfig();
-  const [torrents, setTorrents] = useState(DEMO_TORRENTS);
+  const [torrents, setTorrents] = useState([]);
   const [showAddTorrent, setShowAddTorrent] = useState(false);
   const [magnetLink, setMagnetLink] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
-  const [connected, setConnected] = useState(false);
+  const [connected, setConnected] = useState(null); // null = checking, true/false
+  const pollRef = useRef(null);
+
+  const fetchTorrents = useCallback(async () => {
+    try {
+      const res = await fetch('/api/qbit/list');
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setTorrents(data.torrents || []);
+      setConnected(true);
+    } catch {
+      setConnected(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTorrents();
+    pollRef.current = setInterval(fetchTorrents, 3000);
+    return () => clearInterval(pollRef.current);
+  }, [fetchTorrents]);
 
   const filtered = filterStatus === 'all'
     ? torrents
     : torrents.filter((t) => t.status === filterStatus);
 
-  const stats = {
-    downloading: torrents.filter((t) => t.status === 'downloading').length,
-    completed: torrents.filter((t) => t.status === 'completed').length,
-    totalDown: '23.7 MB/s',
-    totalUp: '4.2 MB/s',
-  };
+  const downloading = torrents.filter((t) => t.status === 'downloading').length;
+  const completed = torrents.filter((t) => t.progress === 100).length;
+  const totalDlSpeed = torrents.reduce((sum, t) => sum + (t.rawDlSpeed || 0), 0);
+  const totalUpSpeed = torrents.reduce((sum, t) => sum + (t.rawUpSpeed || 0), 0);
 
   const handleAddTorrent = async () => {
     if (!magnetLink) return;
@@ -57,23 +72,20 @@ export default function DownloadsPage() {
       if (res.ok) {
         setMagnetLink('');
         setShowAddTorrent(false);
+        fetchTorrents();
       }
-    } catch (err) {
-      console.error('Failed to add torrent:', err);
-    }
+    } catch { /* silent */ }
   };
 
-  const handleAction = async (torrentId, action) => {
-    // In production: POST /api/qbit/{action} with torrent hash
-    setTorrents((prev) =>
-      prev.map((t) => {
-        if (t.id !== torrentId) return t;
-        if (action === 'pause') return { ...t, status: 'paused', speed: '0 KB/s' };
-        if (action === 'resume') return { ...t, status: 'downloading' };
-        if (action === 'delete') return null;
-        return t;
-      }).filter(Boolean)
-    );
+  const handleAction = async (hash, action) => {
+    try {
+      await fetch(`/api/qbit/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hash }),
+      });
+      fetchTorrents();
+    } catch { /* silent */ }
   };
 
   return (
@@ -81,10 +93,10 @@ export default function DownloadsPage() {
       {/* Stats bar */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         {[
-          { label: 'Downloading', value: stats.downloading, color: 'text-vault-teal', icon: '↓' },
-          { label: 'Completed', value: stats.completed, color: 'text-green-400', icon: '✓' },
-          { label: 'Download Speed', value: stats.totalDown, color: 'text-vault-accent', icon: '⬇' },
-          { label: 'Upload Speed', value: stats.totalUp, color: 'text-blue-400', icon: '⬆' },
+          { label: 'Downloading', value: downloading, color: 'text-vault-teal', icon: '↓' },
+          { label: 'Completed', value: completed, color: 'text-green-400', icon: '✓' },
+          { label: 'Download Speed', value: formatSpeed(totalDlSpeed), color: 'text-vault-accent', icon: '⬇' },
+          { label: 'Upload Speed', value: formatSpeed(totalUpSpeed), color: 'text-blue-400', icon: '⬆' },
         ].map((stat) => (
           <div key={stat.label} className="p-4 rounded-lg bg-vault-surface border border-vault-border">
             <p className="text-[10px] uppercase tracking-widest text-vault-muted mb-1">{stat.label}</p>
@@ -140,30 +152,45 @@ export default function DownloadsPage() {
         </div>
       )}
 
-      {/* Connection warning */}
-      {!connected && (
+      {/* Connection status */}
+      {connected === null && (
         <div className="mb-4 px-4 py-3 rounded-lg bg-vault-card border border-vault-border flex items-center gap-3">
-          <div className="w-2 h-2 rounded-full bg-vault-gold animate-pulse" />
+          <div className="w-2 h-2 rounded-full bg-vault-teal animate-pulse" />
+          <p className="text-xs text-vault-muted">Connecting to qBittorrent...</p>
+        </div>
+      )}
+      {connected === false && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-vault-card border border-vault-border flex items-center gap-3">
+          <div className="w-2 h-2 rounded-full bg-red-400" />
           <p className="text-xs text-vault-muted">
-            Demo mode — configure qBittorrent connection in <span className="text-vault-teal">Settings</span> to manage real downloads.
+            Cannot reach qBittorrent — check URL and credentials in <span className="text-vault-teal">Settings</span> or .env file.
           </p>
         </div>
       )}
 
       {/* Torrent list */}
+      {connected && torrents.length === 0 && (
+        <div className="text-center text-vault-muted text-sm py-16">
+          No torrents. Send one from the News page or click + Add Torrent above.
+        </div>
+      )}
       <div className="space-y-2">
         {filtered.map((torrent) => (
           <div key={torrent.id} className="p-4 rounded-lg bg-vault-surface border border-vault-border hover:border-vault-border/80 transition-colors">
             <div className="flex items-center gap-4">
               {/* Status icon */}
-              <div className={`w-9 h-9 rounded-lg ${STATUS_BG[torrent.status]} flex items-center justify-center shrink-0`}>
+              <div className={`w-9 h-9 rounded-lg ${STATUS_BG[torrent.status] || STATUS_BG.queued} flex items-center justify-center shrink-0`}>
                 {torrent.status === 'downloading' ? (
                   <svg className="w-4 h-4 text-vault-teal animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                   </svg>
-                ) : torrent.status === 'completed' ? (
+                ) : torrent.status === 'completed' || torrent.status === 'seeding' ? (
                   <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : torrent.status === 'paused' ? (
+                  <svg className="w-4 h-4 text-vault-gold" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
                   </svg>
                 ) : (
                   <svg className="w-4 h-4 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -177,8 +204,19 @@ export default function DownloadsPage() {
                 <h4 className="text-sm font-medium text-vault-text truncate">{torrent.name}</h4>
                 <div className="flex items-center gap-3 mt-1">
                   <span className="text-[10px] text-vault-muted">{torrent.size}</span>
-                  <span className={`text-[10px] ${STATUS_COLORS[torrent.status]}`}>{torrent.speed}</span>
-                  <span className="text-[10px] text-vault-muted">ETA: {torrent.eta}</span>
+                  {torrent.status === 'downloading' && (
+                    <span className="text-[10px] text-vault-teal">{torrent.speed}</span>
+                  )}
+                  {(torrent.status === 'seeding' || torrent.status === 'completed') && (
+                    <span className={`text-[10px] font-semibold ${torrent.status === 'seeding' ? 'text-green-400' : 'text-red-400'}`}>
+                      {torrent.status === 'seeding' ? `↑ ${torrent.upSpeed} · Seeding` : 'Not seeding'}
+                    </span>
+                  )}
+                  {torrent.status !== 'seeding' && torrent.status !== 'completed' && torrent.status !== 'downloading' && (
+                    <span className={`text-[10px] ${STATUS_COLORS[torrent.status] || 'text-vault-muted'}`}>{torrent.speed}</span>
+                  )}
+                  {torrent.status === 'downloading' && <span className="text-[10px] text-vault-muted">ETA: {torrent.eta}</span>}
+                  <span className={`text-[10px] ${torrent.ratio >= 1 ? 'text-green-400' : 'text-vault-muted'}`} title="Seed ratio">R:{torrent.ratio?.toFixed(2)}</span>
                   <span className="text-[10px] text-vault-muted">S:{torrent.seeds} P:{torrent.peers}</span>
                   <span className="text-[10px] text-vault-muted">{torrent.added}</span>
                 </div>
@@ -195,13 +233,13 @@ export default function DownloadsPage() {
               </div>
 
               {/* Progress % */}
-              <span className={`text-sm font-mono font-medium ${STATUS_COLORS[torrent.status]} shrink-0`}>
+              <span className={`text-sm font-mono font-medium ${STATUS_COLORS[torrent.status] || 'text-vault-muted'} shrink-0`}>
                 {torrent.progress}%
               </span>
 
               {/* Actions */}
               <div className="flex items-center gap-1 shrink-0">
-                {torrent.status === 'downloading' && (
+                {(torrent.status === 'downloading' || torrent.status === 'seeding') && (
                   <button
                     onClick={() => handleAction(torrent.id, 'pause')}
                     className="p-1.5 rounded text-vault-muted hover:text-vault-gold hover:bg-vault-gold/10 transition-colors"

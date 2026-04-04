@@ -1,6 +1,7 @@
 import HeroBanner from '../components/common/HeroBanner';
 import CarouselRow from '../components/common/CarouselRow';
 import { usePlexLibrary } from '../hooks/usePlex';
+import { useBookmarks } from '../hooks/useBookmarks';
 
 // Demo data — replaced by Plex API data when connected
 const DEMO_FEATURED = [
@@ -42,7 +43,49 @@ const DEMO_ROWS = {
   ],
 };
 
-export default function HomePage({ searchQuery }) {
+function BookmarkedChannels({ onNavigate }) {
+  const { bookmarks } = useBookmarks('channel');
+  if (bookmarks.length === 0) return null;
+
+  return (
+    <div className="mb-8">
+      <div className="flex items-center gap-3 px-6 mb-3">
+        <h3 className="font-display text-xl tracking-wide text-white">My Channels</h3>
+        <span className="text-[10px] text-vault-gold bg-vault-gold/15 px-2 py-0.5 rounded-full font-medium">
+          {bookmarks.length} bookmarked
+        </span>
+      </div>
+      <div className="flex gap-3 px-6 overflow-x-auto carousel-row pb-2">
+        {bookmarks.map((ch) => (
+          <button
+            key={ch.id}
+            onClick={() => onNavigate('livetv', ch)}
+            className="shrink-0 w-36 flex flex-col items-center gap-2 p-3 rounded-xl bg-vault-surface border border-vault-border hover:border-vault-accent/50 hover:bg-vault-card transition-all group"
+          >
+            <div className="w-14 h-14 rounded-lg bg-vault-card flex items-center justify-center overflow-hidden">
+              {ch.logo ? (
+                <img src={ch.logo} alt="" className="w-12 h-12 object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
+              ) : (
+                <svg className="w-7 h-7 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+              )}
+            </div>
+            <div className="text-center min-w-0 w-full">
+              <p className="text-xs font-medium text-vault-text truncate">{ch.title ?? ch.name}</p>
+              <p className="text-[10px] text-vault-muted truncate">{ch.group_name}</p>
+            </div>
+            <span className="text-[9px] font-bold uppercase tracking-wider text-vault-accent opacity-0 group-hover:opacity-100 transition-opacity">
+              Watch →
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default function HomePage({ searchQuery, onNavigate }) {
   const { library, connected } = usePlexLibrary();
   const rows = connected && library ? library : DEMO_ROWS;
 
@@ -58,6 +101,8 @@ export default function HomePage({ searchQuery }) {
           </p>
         </div>
       )}
+
+      <BookmarkedChannels onNavigate={onNavigate} />
 
       {Object.entries(rows).map(([title, items]) => (
         <CarouselRow key={title} title={title} items={items} />

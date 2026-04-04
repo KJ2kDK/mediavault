@@ -9,11 +9,6 @@ export function usePlexLibrary() {
   const [error, setError] = useState(null);
 
   const fetchLibrary = useCallback(async () => {
-    const { serverUrl, token } = config.plex;
-    if (!serverUrl || !token) {
-      setConnected(false);
-      return;
-    }
 
     setLoading(true);
     setError(null);
@@ -45,7 +40,7 @@ export function usePlexSearch(query) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!query || query.length < 2 || !config.plex.serverUrl) {
+    if (!query || query.length < 2) {
       setResults([]);
       return;
     }

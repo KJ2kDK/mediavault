@@ -32,6 +32,7 @@ export default function DownloadsPage() {
   const [magnetLink, setMagnetLink] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [connected, setConnected] = useState(null); // null = checking, true/false
+  const [disk, setDisk] = useState(null);
   const pollRef = useRef(null);
 
   const fetchTorrents = useCallback(async () => {
@@ -41,6 +42,11 @@ export default function DownloadsPage() {
       const data = await res.json();
       setTorrents(data.torrents || []);
       setConnected(true);
+      // Fetch disk info (less often is fine — piggyback on torrent poll)
+      try {
+        const diskRes = await fetch('/api/qbit/disk');
+        if (diskRes.ok) setDisk(await diskRes.json());
+      } catch {}
     } catch {
       setConnected(false);
     }
@@ -107,6 +113,25 @@ export default function DownloadsPage() {
           </div>
         ))}
       </div>
+
+      {/* Disk usage */}
+      {disk && (
+        <div className="mb-6 p-4 rounded-lg bg-vault-surface border border-vault-border">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] uppercase tracking-widest text-vault-muted">Seedbox Storage</span>
+            <span className="text-xs text-vault-muted">{disk.used} / {disk.total} ({disk.pct}%)</span>
+          </div>
+          <div className="h-2 w-full bg-vault-border rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${
+                disk.pct > 90 ? 'bg-red-500' : disk.pct > 70 ? 'bg-vault-gold' : 'bg-vault-teal'
+              }`}
+              style={{ width: `${disk.pct}%` }}
+            />
+          </div>
+          <p className="text-[10px] text-vault-muted mt-1">{disk.free} free</p>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="flex items-center justify-between mb-4">

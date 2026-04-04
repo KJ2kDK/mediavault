@@ -8,6 +8,7 @@ import rssRoutes from './routes/rss.js';
 import libraryRoutes from './routes/library.js';
 import epgRoutes from './routes/epg.js';
 import logsRoutes, { dbLog } from './routes/logs.js';
+import subtitlesRoutes from './routes/subtitles.js';
 import db from './db/index.js';
 
 const app = express();
@@ -23,6 +24,7 @@ app.use('/api/iptv', iptvRoutes);
 app.use('/api/rss', rssRoutes);
 app.use('/api/library', libraryRoutes);
 app.use('/api/epg', epgRoutes);
+app.use('/api/subtitles', subtitlesRoutes);
 app.use('/api/logs', logsRoutes);
 
 // Health check

@@ -156,6 +156,30 @@ router.post('/delete', async (req, res) => {
   }
 });
 
+// Disk usage
+router.get('/disk', async (req, res) => {
+  try {
+    const result = await qbitFetch('/api/v2/sync/maindata');
+    const data = await result.json();
+    const freeBytes = data.server_state?.free_space_on_disk || 0;
+    const alloc = data.server_state?.alloc_frl || 0;
+    // Also sum total size of all torrents for "used" estimate
+    const torrents = Object.values(data.torrents || {});
+    const usedBytes = torrents.reduce((sum, t) => sum + (t.size || 0), 0);
+    res.json({
+      freeBytes,
+      usedBytes,
+      totalBytes: freeBytes + usedBytes,
+      free: formatBytes(freeBytes),
+      used: formatBytes(usedBytes),
+      total: formatBytes(freeBytes + usedBytes),
+      pct: Math.round((usedBytes / (freeBytes + usedBytes || 1)) * 100),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 function mapStatus(state) {
   const map = {
     downloading: 'downloading', forcedDL: 'downloading', stalledDL: 'downloading',

@@ -202,26 +202,40 @@ router.get('/play/:id', async (req, res) => {
     if (!part) return res.status(404).json({ error: 'No media part' });
 
     // Subtitle streams from the file
-    const subtitles = (part.Stream || [])
-      .filter((s) => s.streamType === 3)
-      .map((s) => ({
-        id: s.id,
-        language: s.language || s.languageCode || 'Unknown',
-        code: s.languageCode || '',
-        title: s.displayTitle || s.language || 'Unknown',
-        codec: s.codec,
-        url: s.key ? `/api/plex/thumb?server=${encodeURIComponent(serverUrl)}&path=${encodeURIComponent(s.key)}` : null,
-      }));
+    const rawSubs = (part.Stream || []).filter((s) => s.streamType === 3);
+    const subtitles = rawSubs
+      .filter((s) => ['srt', 'ass', 'ssa', 'subrip', 'vtt', 'text'].includes(s.codec))
+      .map((s) => {
+        // Use key if available, otherwise use Plex subtitle extraction endpoint
+        const subUrl = s.key
+          ? `/api/plex/thumb?server=${encodeURIComponent(serverUrl)}&path=${encodeURIComponent(s.key)}`
+          : `/api/plex/subtitle?server=${encodeURIComponent(serverUrl)}&partId=${part.id}&streamId=${s.id}&ratingKey=${req.params.id}`;
+        return {
+          id: s.id,
+          language: s.language || s.languageCode || 'Unknown',
+          code: s.languageCode || '',
+          title: s.displayTitle || s.language || 'Unknown',
+          codec: s.codec,
+          url: subUrl,
+        };
+      });
 
-    // Direct stream URL (proxied through our backend with Range support)
-    const streamUrl = part.key ? `/api/plex/stream?server=${encodeURIComponent(serverUrl)}&path=${encodeURIComponent(part.key)}` : null;
+    // Transcoded stream URL (audio → AAC, video direct-stream when possible)
+    const transcodeUrl = `/api/plex/stream?server=${encodeURIComponent(serverUrl)}&id=${req.params.id}&mode=transcode`;
+    // Direct stream URL (no transcode — works if audio is browser-compatible)
+    const directUrl = part.key ? `/api/plex/stream?server=${encodeURIComponent(serverUrl)}&path=${encodeURIComponent(part.key)}&mode=direct` : null;
+
+    // Check if audio needs transcoding
+    const audioStream = (part.Stream || []).find((s) => s.streamType === 2);
+    const audioCodec = audioStream?.codec || '';
+    const needsTranscode = !['aac', 'mp3', 'opus', 'flac'].includes(audioCodec);
 
     res.json({
       title: item.title,
       episode: item.type === 'episode' ? `S${String(item.parentIndex).padStart(2, '0')}E${String(item.index).padStart(2, '0')}` : null,
       showTitle: item.grandparentTitle || null,
       duration: item.duration || 0,
-      streamUrl,
+      streamUrl: needsTranscode ? transcodeUrl : (directUrl || transcodeUrl),
       subtitles,
       thumb: item.thumb ? `/api/plex/thumb?server=${encodeURIComponent(serverUrl)}&path=${encodeURIComponent(item.thumb)}` : null,
     });
@@ -230,27 +244,126 @@ router.get('/play/:id', async (req, res) => {
   }
 });
 
-// ── GET /api/plex/stream?server=URL&path=/library/parts/... ──────────────────
-// Proxy video stream with Range header support for seeking
+// ── GET /api/plex/subtitle — extract embedded subtitle ───────────────────────
+router.get('/subtitle', async (req, res) => {
+  try {
+    const token = process.env.PLEX_TOKEN;
+    const { server: serverUrl, partId, streamId, ratingKey } = req.query;
+    if (!token || !serverUrl || !streamId) return res.status(400).json({ error: 'missing params' });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+
+    // Try multiple Plex API paths
+    const urls = [
+      partId && `${serverUrl}/library/parts/${partId}/subtitles?format=srt&selectedStreamID=${streamId}&X-Plex-Token=${token}`,
+      `${serverUrl}/library/streams/${streamId}?X-Plex-Token=${token}`,
+    ].filter(Boolean);
+
+    let text = null;
+    for (const url of urls) {
+      try {
+        console.log(`[plex] Trying subtitle URL: ${url.slice(0, 100)}...`);
+        const subRes = await fetch(url, {
+          agent: serverUrl.startsWith('https') ? agent : undefined,
+          signal: controller.signal,
+        });
+        if (subRes.ok) {
+          text = await subRes.text();
+          if (text && text.length > 10) break;
+        }
+      } catch (e) {
+        console.log(`[plex] Subtitle URL failed: ${e.message}`);
+      }
+    }
+    clearTimeout(timer);
+
+    if (!text) return res.status(404).json({ error: 'Could not extract subtitle' });
+
+    // Convert to VTT
+    if (!text.startsWith('WEBVTT')) {
+      if (text.includes('[Script Info]') || text.includes('Dialogue:')) {
+        text = assToVtt(text);
+      } else {
+        text = srtToVtt(text);
+      }
+    }
+
+    console.log(`[plex] Subtitle extracted: ${text.length} chars`);
+    res.set('Content-Type', 'text/vtt; charset=utf-8');
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(text);
+  } catch (err) {
+    console.error('[plex] subtitle error:', err.message);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+function srtToVtt(srt) {
+  let vtt = 'WEBVTT\n\n';
+  vtt += srt.replace(/\r\n/g, '\n').replace(/(\d{2}):(\d{2}):(\d{2}),(\d{3})/g, '$1:$2:$3.$4').replace(/^\d+\n/gm, '');
+  return vtt;
+}
+
+function assToVtt(ass) {
+  let vtt = 'WEBVTT\n\n';
+  for (const line of ass.split('\n')) {
+    const m = line.match(/^Dialogue:\s*\d+,(\d+:\d{2}:\d{2}\.\d{2}),(\d+:\d{2}:\d{2}\.\d{2}),[^,]*,[^,]*,\d+,\d+,\d+,[^,]*,(.*)/);
+    if (!m) continue;
+    const start = m[1].replace(/^(\d):/, '0$1:') + '0';
+    const end = m[2].replace(/^(\d):/, '0$1:') + '0';
+    const text = m[3].replace(/\{[^}]*\}/g, '').replace(/\\N/g, '\n').trim();
+    if (text) vtt += `${start} --> ${end}\n${text}\n\n`;
+  }
+  return vtt;
+}
+
+// ── GET /api/plex/stream ─────────────────────────────────────────────────────
+// mode=direct: proxy raw file with Range support
+// mode=transcode: use Plex transcoder (audio→AAC, video direct-stream)
 router.get('/stream', async (req, res) => {
   try {
     const token = process.env.PLEX_TOKEN;
-    const { server: serverUrl, path } = req.query;
-    if (!token || !serverUrl || !path) return res.status(400).end();
+    const { server: serverUrl, path, id, mode } = req.query;
+    if (!token || !serverUrl) return res.status(400).end();
 
-    const headers = { 'X-Plex-Token': token };
-    if (req.headers.range) headers.Range = req.headers.range;
+    let url;
+    const headers = {};
 
-    const streamRes = await fetch(`${serverUrl}${path}?X-Plex-Token=${token}`, {
+    if (mode === 'transcode' && id) {
+      const params = new URLSearchParams({
+        path: `/library/metadata/${id}`,
+        mediaIndex: '0',
+        partIndex: '0',
+        protocol: 'http',
+        directPlay: '0',
+        directStream: '1',
+        videoQuality: '100',
+        maxVideoBitrate: '40000',
+        audioBoost: '100',
+        'X-Plex-Token': token,
+        'X-Plex-Client-Identifier': 'mediavault',
+        'X-Plex-Product': 'MediaVault',
+        'X-Plex-Platform': 'Chrome',
+      });
+      url = `${serverUrl}/video/:/transcode/universal/start.mkv?${params}`;
+    } else if (path) {
+      url = `${serverUrl}${path}?X-Plex-Token=${token}`;
+      headers['X-Plex-Token'] = token;
+      if (req.headers.range) headers.Range = req.headers.range;
+    } else {
+      return res.status(400).end();
+    }
+
+    const streamRes = await fetch(url, {
       headers,
       agent: serverUrl.startsWith('https') ? agent : undefined,
     });
 
     res.status(streamRes.status);
-    if (streamRes.headers.get('content-type')) res.set('Content-Type', streamRes.headers.get('content-type'));
-    if (streamRes.headers.get('content-length')) res.set('Content-Length', streamRes.headers.get('content-length'));
-    if (streamRes.headers.get('content-range')) res.set('Content-Range', streamRes.headers.get('content-range'));
-    if (streamRes.headers.get('accept-ranges')) res.set('Accept-Ranges', streamRes.headers.get('accept-ranges'));
+    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+      if (streamRes.headers.get(h)) res.set(h, streamRes.headers.get(h));
+    }
     streamRes.body.pipe(res);
   } catch {
     res.status(502).end();

@@ -118,6 +118,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_rss_cat  ON rss_items(category);
 `);
 
+// ── Subtitle translation cache ────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS subtitle_cache (
+    key        TEXT    PRIMARY KEY,
+    vtt        TEXT    NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+`);
+
 // Add sent_at column if it doesn't exist yet (migration)
 try { db.exec('ALTER TABLE rss_items ADD COLUMN sent_at INTEGER'); } catch {}
 

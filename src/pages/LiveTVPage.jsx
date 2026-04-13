@@ -50,15 +50,43 @@ function parseM3U(text) {
 }
 
 // ── Country detection helpers ─────────────────────────────────────────────
-// Matches common IPTV prefixes: "DK: Channel", "DK | Channel", "DK - Channel", "[DK] Channel", "|DK| Channel"
-const COUNTRY_PREFIX_RE = /^(?:\[([A-Z]{2})\]|\|([A-Z]{2})\||([A-Z]{2,3})\s*[:|\-])/i;
+// Matches common IPTV prefixes: "DK: Channel", "DK | Channel", "DK - Channel", "[DK] Channel", "|DK| Channel", "DNK| Channel"
+const COUNTRY_PREFIX_RE = /^(?:\[([A-Z]{2,3})\]|\|([A-Z]{2,3})\||([A-Z]{2,3})\s*[:|\-])/i;
+
+// Map 3-letter IPTV codes → standard 2-letter ISO codes
+const CODE_NORMALIZE = {
+  DNK:'DK', SWE:'SE', NOR:'NO', FIN:'FI', ESP:'ES', USA:'US', CAN:'CA', MXC:'MX',
+  ALB:'AL', ARG:'AR', ARA:'AE', ISR:'IL', CHN:'CN', ARM:'AM', AFG:'AF', UGA:'UG',
+  GHA:'GH', SOM:'SO', SEN:'SN', CHL:'CL', TWN:'TW', ETH:'ET', NIG:'NG', CAM:'CM',
+  LUX:'LU', TGK:'TJ', EST:'EE', MOZ:'MZ', TOG:'TG', MNG:'MN', SRI:'LK', BAN:'BD',
+  NIC:'NI', RWA:'RW', ERI:'ER', GUI:'GN', ANG:'AO', GAM:'GM', BKF:'BF', TCH:'TD', COM:'KM',
+  SLN:'SL',
+};
+
+function normalizeCode(raw) {
+  const up = raw.toUpperCase();
+  return CODE_NORMALIZE[up] || (up.length === 2 ? up : null);
+}
 
 function detectCountryCode(channel) {
   const nameMatch = channel.name.match(COUNTRY_PREFIX_RE);
-  if (nameMatch) return (nameMatch[1] || nameMatch[2] || nameMatch[3]).toUpperCase();
+  if (nameMatch) {
+    const code = normalizeCode(nameMatch[1] || nameMatch[2] || nameMatch[3]);
+    if (code) return code;
+  }
   const groupMatch = channel.group?.match(COUNTRY_PREFIX_RE);
-  if (groupMatch) return (groupMatch[1] || groupMatch[2] || groupMatch[3]).toUpperCase();
+  if (groupMatch) {
+    const code = normalizeCode(groupMatch[1] || groupMatch[2] || groupMatch[3]);
+    if (code) return code;
+  }
   return null;
+}
+
+function detectCategoryCountry(categoryName) {
+  const m = categoryName.match(/^\|([A-Z]{2,3})\|\s*|^\[([A-Z]{2,3})\]\s*|^([A-Z]{2,3})\s*[:|\-]\s*/i);
+  if (!m) return null;
+  const raw = (m[1] || m[2] || m[3]).toUpperCase();
+  return CODE_NORMALIZE[raw] || (raw.length === 2 ? raw : null);
 }
 
 // Country name lookup (common IPTV codes)
@@ -81,6 +109,10 @@ const COUNTRY_NAMES = {
   TN:'Tunisia',TR:'Turkey',UA:'Ukraine',AE:'UAE',GB:'United Kingdom',
   US:'United States',UY:'Uruguay',UZ:'Uzbekistan',VE:'Venezuela',VN:'Vietnam',
   YE:'Yemen',ZW:'Zimbabwe',XK:'Kosovo',EX:'International',UK:'United Kingdom',
+  UG:'Uganda',SO:'Somalia',SN:'Senegal',CM:'Cameroon',LU:'Luxembourg',TJ:'Tajikistan',
+  EE:'Estonia',MZ:'Mozambique',TG:'Togo',MN:'Mongolia',LK:'Sri Lanka',NI:'Nicaragua',
+  RW:'Rwanda',ER:'Eritrea',GN:'Guinea',AO:'Angola',GM:'Gambia',BF:'Burkina Faso',
+  TD:'Chad',KM:'Comoros',SL:'Sierra Leone',
 };
 
 // Country → IANA timezone (primary/capital timezone for each country)
@@ -108,6 +140,12 @@ const COUNTRY_TZ = {
   GB:'Europe/London',UK:'Europe/London',US:'America/New_York',UY:'America/Montevideo',
   UZ:'Asia/Tashkent',VE:'America/Caracas',VN:'Asia/Ho_Chi_Minh',YE:'Asia/Aden',
   ZW:'Africa/Harare',XK:'Europe/Belgrade',EX:'UTC',
+  UG:'Africa/Kampala',SO:'Africa/Mogadishu',SN:'Africa/Dakar',CM:'Africa/Douala',
+  LU:'Europe/Luxembourg',TJ:'Asia/Dushanbe',EE:'Europe/Tallinn',MZ:'Africa/Maputo',
+  TG:'Africa/Lome',MN:'Asia/Ulaanbaatar',LK:'Asia/Colombo',NI:'America/Managua',
+  RW:'Africa/Kigali',ER:'Africa/Asmara',GN:'Africa/Conakry',AO:'Africa/Luanda',
+  GM:'Africa/Banjul',BF:'Africa/Ouagadougou',TD:'Africa/Ndjamena',KM:'Indian/Comoro',
+  SL:'Africa/Freetown',
 };
 
 // ── Single virtualised channel row — must be outside component to avoid re-creating on every render
@@ -257,6 +295,10 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
   const [seriesItemsByCategory, setSeriesItemsByCategory] = useState({});
   const [loadingSeriesCats, setLoadingSeriesCats] = useState(false);
   const [loadingSeriesItems, setLoadingSeriesItems] = useState(false);
+
+  // VOD and Series country filters
+  const [vodCountryFilter, setVodCountryFilter] = useState(null);
+  const [seriesCountryFilter, setSeriesCountryFilter] = useState(null);
 
   // ── Live channel state ────────────────────────────────────────────────────
   const [activeChannel, setActiveChannel] = useState(null);
@@ -425,6 +467,40 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
     return () => clearInterval(t);
   }, [visibleChannels]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── VOD country detection and filtering ────────────────────────────────────
+  const vodDetectedCountries = useMemo(() => {
+    const map = {};
+    vodCategories.forEach((cat) => {
+      const code = detectCategoryCountry(cat.name);
+      if (code) map[code] = (map[code] || 0) + 1;
+    });
+    return Object.entries(map)
+      .map(([code, count]) => ({ code, name: COUNTRY_NAMES[code] ?? code, count }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [vodCategories]);
+
+  const filteredVodCategories = useMemo(() => {
+    if (!vodCountryFilter) return vodCategories;
+    return vodCategories.filter((cat) => detectCategoryCountry(cat.name) === vodCountryFilter);
+  }, [vodCategories, vodCountryFilter]);
+
+  // ── Series country detection and filtering ───────────────────────────────────
+  const seriesDetectedCountries = useMemo(() => {
+    const map = {};
+    seriesCategories.forEach((cat) => {
+      const code = detectCategoryCountry(cat.name);
+      if (code) map[code] = (map[code] || 0) + 1;
+    });
+    return Object.entries(map)
+      .map(([code, count]) => ({ code, name: COUNTRY_NAMES[code] ?? code, count }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [seriesCategories]);
+
+  const filteredSeriesCategories = useMemo(() => {
+    if (!seriesCountryFilter) return seriesCategories;
+    return seriesCategories.filter((cat) => detectCategoryCountry(cat.name) === seriesCountryFilter);
+  }, [seriesCategories, seriesCountryFilter]);
+
   // ── VOD bookmarks ─────────────────────────────────────────────────────────
   const { bookmarkedIds: vodBookmarkedIds, toggle: toggleVodBookmark } = useBookmarks('vod');
 
@@ -447,7 +523,42 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
 
   const playChannel = useCallback((channel) => {
     // Always use the freshest channel data from the loaded list (has current epg_id)
-    const fresh = channels.find(c => c.id === channel.id) ?? channel;
+    // If exact ID not found, fuzzy-match by name (handles provider channel renames/reIDs)
+    let fresh = channels.find(c => c.id === channel.id);
+    // Check if the provider recycled this ID for a completely different channel
+    if (fresh && (channel.title || channel.name)) {
+      const coreN = (s) => s.replace(/^[A-Z]{2,3}\|\s*/i, '').replace(/\s*\[.*?\]\s*/g, '').replace(/\s+/g, '').toLowerCase().trim();
+      const bk = coreN(channel.title ?? channel.name);
+      const mk = coreN(fresh.name);
+      if (bk && mk && bk !== mk && !mk.includes(bk) && !bk.includes(mk)) fresh = null;
+    }
+    if (!fresh && channels.length > 0) {
+      // Normalise: strip country prefix, collapse spaces, lower-case
+      const norm = (s) => s.replace(/^[A-Z]{2,3}\|\s*/i, '').replace(/\s+/g, ' ').toLowerCase().trim();
+      const needle = norm(channel.title ?? channel.name ?? '');
+      // "core" strips quality tags [720p] etc. AND removes all spaces for fuzzy comparison
+      // This handles renames like "TV2 NEWS" → "TV 2 NEWS"
+      const core = (s) => norm(s).replace(/\s*\[.*?\]\s*/g, '').replace(/\s+/g, '').trim();
+      const needleCore = core(channel.title ?? channel.name ?? '');
+      if (needle) {
+        // Try exact normalised name match
+        fresh = channels.find(c => norm(c.name) === needle);
+        // Try matching without quality tags (e.g. "tv2 news" ≈ "tv 2 news")
+        if (!fresh && needleCore) {
+          fresh = channels.find(c => core(c.name) === needleCore);
+        }
+        // Fallback: core name contains (pick best quality: prefer [720p])
+        if (!fresh && needleCore) {
+          const matches = channels.filter(c => {
+            const h = core(c.name);
+            return h.includes(needleCore) || needleCore.includes(h);
+          });
+          // Prefer 720p match, then first match
+          fresh = matches.find(c => c.name.includes('[720p]')) || matches[0];
+        }
+      }
+    }
+    if (!fresh) fresh = channel;
     setActiveChannel(fresh);
     setPlayerStatus('loading');
     const video = videoRef.current;
@@ -455,6 +566,7 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
 
     if (Hls.isSupported()) {
       hlsRef.current?.destroy();
+      let recoverAttempts = 0;
       const hls = new Hls({
         enableWorker: true,
         startLevel: 0,
@@ -473,8 +585,10 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
       });
       hlsRef.current = hls;
       // Route through backend proxy to bypass CORS on the IPTV server
+      // Append JWT token as query param so HLS.js requests pass the auth wall
+      const authToken = localStorage.getItem('mediavault_token') || '';
       const src = fresh.url.startsWith('http')
-        ? `/api/iptv/proxy?url=${encodeURIComponent(fresh.url)}`
+        ? `/api/iptv/proxy?url=${encodeURIComponent(fresh.url)}&token=${encodeURIComponent(authToken)}`
         : fresh.url;
       hls.loadSource(src);
       hls.attachMedia(video);
@@ -484,7 +598,21 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
       hls.on(Hls.Events.FRAG_BUFFERED, () => setPlayerStatus('playing'));
       hls.on(Hls.Events.ERROR, (_, data) => {
         console.warn('[HLS]', data.type, data.details, data.fatal, data.response?.code);
-        if (data.fatal) { setPlayerStatus('error'); hls.destroy(); }
+        if (data.fatal) {
+          // Try to recover from fatal errors before giving up
+          if (recoverAttempts < 3 && data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            recoverAttempts++;
+            console.log(`[HLS] Media error recovery attempt ${recoverAttempts}/3...`);
+            hls.recoverMediaError();
+          } else if (recoverAttempts < 3 && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            recoverAttempts++;
+            console.log(`[HLS] Network error recovery attempt ${recoverAttempts}/3...`);
+            hls.startLoad();
+          } else {
+            setPlayerStatus('error');
+            hls.destroy();
+          }
+        }
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = fresh.url;
@@ -500,13 +628,63 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
   );
 
   // Auto-play channel passed from another page (e.g. bookmarked channel on Home)
+  // Wait until real channels are loaded (not DEMO_CHANNELS) so fuzzy matching works
+  const channelsReady = channels.length > 0 && channels[0]?.id !== 'c1';
   useEffect(() => {
-    if (navPayload?.url) {
+    if (!navPayload) return;
+    if (navPayload.url) {
+      if (channelsReady) {
+        setActiveTab('live');
+        // Resolve the actual channel (fuzzy match) so we can switch country/group
+        const resolveChannel = (ch) => {
+          let fresh = channels.find(c => c.id === ch.id);
+          // If the ID-matched channel name doesn't resemble the bookmark title,
+          // the provider recycled the stream ID — reject and fall through to fuzzy match
+          if (fresh && (ch.title || ch.name)) {
+            const coreN = (s) => s.replace(/^[A-Z]{2,3}\|\s*/i, '').replace(/\s*\[.*?\]\s*/g, '').replace(/\s+/g, '').toLowerCase().trim();
+            const bookmarkCore = coreN(ch.title ?? ch.name);
+            const matchedCore = coreN(fresh.name);
+            if (bookmarkCore && matchedCore && bookmarkCore !== matchedCore && !matchedCore.includes(bookmarkCore) && !bookmarkCore.includes(matchedCore)) {
+              fresh = null;
+            }
+          }
+          if (!fresh) {
+            const norm = (s) => s.replace(/^[A-Z]{2,3}\|\s*/i, '').replace(/\s+/g, ' ').toLowerCase().trim();
+            const core = (s) => norm(s).replace(/\s*\[.*?\]\s*/g, '').replace(/\s+/g, '').trim();
+            const needleCore = core(ch.title ?? ch.name ?? '');
+            if (needleCore) {
+              fresh = channels.find(c => core(c.name) === needleCore);
+              if (!fresh) {
+                const matches = channels.filter(c => { const h = core(c.name); return h.includes(needleCore) || needleCore.includes(h); });
+                fresh = matches.find(c => c.name.includes('[720p]')) || matches[0];
+              }
+            }
+          }
+          return fresh ?? ch;
+        };
+        const resolved = resolveChannel(navPayload);
+        // Switch country picker to the channel's country
+        const country = detectCountryCode(resolved);
+        if (country && country !== activeCountry) {
+          setActiveCountry(country);
+        }
+        // Switch group to the channel's group (or 'All' if not visible)
+        if (resolved.group) {
+          setActiveGroup(resolved.group);
+        } else {
+          setActiveGroup('All');
+        }
+        setSearchTerm('');
+        playChannel(resolved);
+        onClearNavPayload?.();
+      }
+      // else: wait — this effect re-runs when channelsReady flips to true
+    } else if (navPayload.search) {
       setActiveTab('live');
-      playChannel(navPayload);
+      setSearchTerm(navPayload.search);
       onClearNavPayload?.();
     }
-  }, [navPayload]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [navPayload, channelsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFetchEpg = async () => {
     if (!xtreamCreds.base) return;
@@ -618,6 +796,23 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
   const fetchVodCategories = async () => {
     setLoadingVodCats(true);
     try {
+      // Try DB cache first
+      const cachedRes = await fetch('/api/iptv/xtream/vod/categories/cached');
+      const cachedData = await cachedRes.json();
+      if (cachedData.categories?.length > 0) {
+        setVodCategories(cachedData.categories);
+        setLoadingVodCats(false);
+        // Background refresh from API
+        fetch('/api/iptv/xtream/vod/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(xtreamCreds),
+        }).then(r => r.json()).then(data => {
+          if (data.categories?.length > 0) setVodCategories(data.categories);
+        }).catch(() => {});
+        return;
+      }
+      // No cache — fetch from API
       const res = await fetch('/api/iptv/xtream/vod/categories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -637,6 +832,23 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
     setActiveVodCategory(cat);
     setLoadingVodItems(true);
     try {
+      // Try DB cache first
+      const cachedRes = await fetch(`/api/iptv/xtream/vod/cached?category_id=${encodeURIComponent(cat.id)}`);
+      const cachedData = await cachedRes.json();
+      if (cachedData.items?.length > 0) {
+        setVodItemsByCategory((prev) => ({ ...prev, [cat.id]: cachedData.items }));
+        setLoadingVodItems(false);
+        // Background refresh from API
+        fetch('/api/iptv/xtream/vod', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...xtreamCreds, category_id: cat.id }),
+        }).then(r => r.json()).then(data => {
+          if (data.items?.length > 0) setVodItemsByCategory((prev) => ({ ...prev, [cat.id]: data.items }));
+        }).catch(() => {});
+        return;
+      }
+      // No cache — fetch from API
       const res = await fetch('/api/iptv/xtream/vod', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -655,6 +867,23 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
   const fetchSeriesCategories = async () => {
     setLoadingSeriesCats(true);
     try {
+      // Try DB cache first
+      const cachedRes = await fetch('/api/iptv/xtream/series/categories/cached');
+      const cachedData = await cachedRes.json();
+      if (cachedData.categories?.length > 0) {
+        setSeriesCategories(cachedData.categories);
+        setLoadingSeriesCats(false);
+        // Background refresh from API
+        fetch('/api/iptv/xtream/series/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(xtreamCreds),
+        }).then(r => r.json()).then(data => {
+          if (data.categories?.length > 0) setSeriesCategories(data.categories);
+        }).catch(() => {});
+        return;
+      }
+      // No cache — fetch from API
       const res = await fetch('/api/iptv/xtream/series/categories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -674,6 +903,23 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
     setActiveSeriesCategory(cat);
     setLoadingSeriesItems(true);
     try {
+      // Try DB cache first
+      const cachedRes = await fetch(`/api/iptv/xtream/series/cached?category_id=${encodeURIComponent(cat.id)}`);
+      const cachedData = await cachedRes.json();
+      if (cachedData.items?.length > 0) {
+        setSeriesItemsByCategory((prev) => ({ ...prev, [cat.id]: cachedData.items }));
+        setLoadingSeriesItems(false);
+        // Background refresh from API
+        fetch('/api/iptv/xtream/series', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...xtreamCreds, category_id: cat.id }),
+        }).then(r => r.json()).then(data => {
+          if (data.items?.length > 0) setSeriesItemsByCategory((prev) => ({ ...prev, [cat.id]: data.items }));
+        }).catch(() => {});
+        return;
+      }
+      // No cache — fetch from API
       const res = await fetch('/api/iptv/xtream/series', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1122,6 +1368,32 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
         <div className="flex flex-1 min-h-0">
           {/* Category sidebar */}
           <div className="w-52 shrink-0 border-r border-vault-border flex flex-col bg-vault-surface/50">
+            {vodDetectedCountries.length > 1 && (
+              <div className="p-2 border-b border-vault-border shrink-0">
+                <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-thin">
+                  <button
+                    onClick={() => setVodCountryFilter(null)}
+                    className={`shrink-0 px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+                      !vodCountryFilter ? 'bg-vault-accent text-white' : 'bg-vault-card text-vault-muted hover:text-white'
+                    }`}
+                  >
+                    All ({vodCategories.length})
+                  </button>
+                  {vodDetectedCountries.map(({ code, name, count }) => (
+                    <button
+                      key={code}
+                      onClick={() => setVodCountryFilter(code)}
+                      className={`shrink-0 px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+                        vodCountryFilter === code ? 'bg-vault-accent text-white' : 'bg-vault-card text-vault-muted hover:text-white'
+                      }`}
+                      title={name}
+                    >
+                      {code} ({count})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="p-2 border-b border-vault-border shrink-0">
               <input
                 type="text"
@@ -1135,13 +1407,13 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
               <div className="flex items-center justify-center flex-1">
                 <p className="text-xs text-vault-muted animate-pulse">Loading…</p>
               </div>
-            ) : vodCategories.length === 0 ? (
+            ) : filteredVodCategories.length === 0 ? (
               <div className="flex items-center justify-center flex-1 px-4 text-center">
                 <p className="text-xs text-vault-muted">{xtreamCreds.base ? 'No categories found' : 'Connect an Xtream source on Live TV'}</p>
               </div>
             ) : (
               <div className="overflow-y-auto flex-1 py-1">
-                {vodCategories.map((cat) => (
+                {filteredVodCategories.map((cat) => (
                   <button
                     key={cat.id}
                     onClick={() => fetchVodCategory(cat)}
@@ -1175,7 +1447,7 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
             ) : (
               <>
                 <p className="text-[10px] text-vault-muted mb-4">
-                  {activeVodCategory.name} · {currentVodItems.length.toLocaleString()} titles
+                  {activeVodCategory.name} · {currentVodItems.length.toLocaleString()} title{currentVodItems.length !== 1 ? 's' : ''}
                   {vodSearchDebounced && ` matching "${vodSearchDebounced}"`}
                 </p>
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-4">
@@ -1201,17 +1473,52 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
         <div className="flex flex-1 min-h-0">
           {/* Category sidebar */}
           <div className="w-52 shrink-0 border-r border-vault-border flex flex-col bg-vault-surface/50">
+            {seriesDetectedCountries.length > 1 && (
+              <div className="p-2 border-b border-vault-border shrink-0">
+                <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-thin">
+                  <button
+                    onClick={() => setSeriesCountryFilter(null)}
+                    className={`shrink-0 px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+                      !seriesCountryFilter ? 'bg-vault-accent text-white' : 'bg-vault-card text-vault-muted hover:text-white'
+                    }`}
+                  >
+                    All ({seriesCategories.length})
+                  </button>
+                  {seriesDetectedCountries.map(({ code, name, count }) => (
+                    <button
+                      key={code}
+                      onClick={() => setSeriesCountryFilter(code)}
+                      className={`shrink-0 px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+                        seriesCountryFilter === code ? 'bg-vault-accent text-white' : 'bg-vault-card text-vault-muted hover:text-white'
+                      }`}
+                      title={name}
+                    >
+                      {code} ({count})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="p-2 border-b border-vault-border shrink-0">
+              <input
+                type="text"
+                placeholder="Search titles…"
+                value={vodSearchTerm}
+                onChange={(e) => setVodSearchTerm(e.target.value)}
+                className="w-full px-2 py-1.5 rounded-md bg-vault-card border border-vault-border text-xs text-vault-text placeholder:text-vault-muted/60 focus:outline-none focus:border-vault-accent/50"
+              />
+            </div>
             {loadingSeriesCats ? (
               <div className="flex items-center justify-center flex-1">
                 <p className="text-xs text-vault-muted animate-pulse">Loading…</p>
               </div>
-            ) : seriesCategories.length === 0 ? (
+            ) : filteredSeriesCategories.length === 0 ? (
               <div className="flex items-center justify-center flex-1 px-4 text-center">
                 <p className="text-xs text-vault-muted">{xtreamCreds.base ? 'No categories found' : 'Connect an Xtream source on Live TV'}</p>
               </div>
             ) : (
               <div className="overflow-y-auto flex-1 py-1">
-                {seriesCategories.map((cat) => (
+                {filteredSeriesCategories.map((cat) => (
                   <button
                     key={cat.id}
                     onClick={() => fetchSeriesCategory(cat)}

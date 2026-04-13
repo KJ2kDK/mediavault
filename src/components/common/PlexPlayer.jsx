@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import Hls from 'hls.js';
 
 export default function PlexPlayer({ item, onClose }) {
   const videoRef = useRef(null);
+  const hlsRef = useRef(null);
   const [playInfo, setPlayInfo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -13,29 +15,121 @@ export default function PlexPlayer({ item, onClose }) {
   const [translating, setTranslating] = useState(null);
   const [appTranslated, setAppTranslated] = useState([]);
   const [subSearchQuery, setSubSearchQuery] = useState('');
+  const [mediaInfo, setMediaInfo] = useState(null);
   const hideTimer = useRef(null);
+  const [timeOffset, setTimeOffset] = useState(0);
+  const [displayTime, setDisplayTime] = useState(0);
+  const [totalDuration, setTotalDuration] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [seekbarValue, setSeekbarValue] = useState(0);
 
-  // Fetch playback info
+  // Fetch playback info from server
   useEffect(() => {
     const load = async () => {
       try {
         const res = await fetch(`/api/plex/play/${item.id}?server=${encodeURIComponent(item.serverUrl)}`);
         if (!res.ok) throw new Error(`Failed: ${res.status}`);
-        setPlayInfo(await res.json());
+        const data = await res.json();
+        setPlayInfo(data);
+
+        // Build media info string
+        const parts = [data.resolution, data.videoCodec, data.audioCodec, data.container].filter(Boolean);
+        if (parts.length) setMediaInfo(parts.join(' · '));
       } catch (err) { setError(err.message); }
     };
     load();
   }, [item.id, item.serverUrl]);
 
-  // Start playback
+  // ── Start playback ────────────────────────────────────────────────────────
+  // direct / remux / remux-audio: streamed as fragmented MP4 → native <video>
+  // transcode: Plex HLS → HLS.js
   useEffect(() => {
     if (!playInfo || !videoRef.current) return;
     const video = videoRef.current;
     if (!playInfo.streamUrl) { setError('No playback URL'); return; }
-    video.src = playInfo.streamUrl;
-    video.addEventListener('canplay', () => setLoading(false), { once: true });
-    video.addEventListener('error', () => setError('Playback failed — format may not be supported'), { once: true });
-    video.play().catch(() => {});
+
+    // Cleanup previous HLS instance
+    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+
+    // Append JWT token to stream URL so <video> / HLS.js can pass auth
+    const token = localStorage.getItem('mediavault_token');
+    const sep = playInfo.streamUrl.includes('?') ? '&' : '?';
+    const url = token ? `${playInfo.streamUrl}${sep}token=${encodeURIComponent(token)}` : playInfo.streamUrl;
+    const mode = playInfo.playbackMode || '';
+    const isHlsMode = mode === 'transcode';
+
+    if (isHlsMode && Hls.isSupported()) {
+      // Plex HLS transcode fallback — use HLS.js
+      const hls = new Hls({
+        maxBufferLength: 30,
+        maxMaxBufferLength: 120,
+        enableWorker: true,
+        startLevel: -1,
+        fragLoadingTimeOut: 30000,
+        manifestLoadingTimeOut: 20000,
+      });
+      hlsRef.current = hls;
+      let retries = 0;
+
+      hls.loadSource(url);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setLoading(false);
+        video.play().catch(() => {});
+      });
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && retries < 2) {
+            retries++;
+            hls.recoverMediaError();
+          } else {
+            setError(`Playback error: ${data.details}`);
+          }
+        }
+      });
+    } else if (isHlsMode && video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari native HLS
+      video.src = url;
+      video.addEventListener('canplay', () => setLoading(false), { once: true });
+      video.addEventListener('error', () => setError('Playback failed'), { once: true });
+      video.play().catch(() => {});
+    } else {
+      // direct / remux / remux-audio — all served as MP4, plays natively
+      video.src = url;
+
+      // For remux modes, set duration manually and handle seeking
+      const isRemuxMode = mode === 'remux' || mode === 'remux-audio';
+      if (isRemuxMode) {
+        const durationMs = playInfo.duration || 0;
+        const durationSec = durationMs / 1000;
+        setTotalDuration(durationSec);
+
+        // Track time updates to sync display with offset
+        const handleTimeUpdate = () => {
+          setDisplayTime(timeOffset + video.currentTime);
+          setSeekbarValue(timeOffset + video.currentTime);
+          setIsPlaying(!video.paused);
+        };
+
+        video.addEventListener('timeupdate', handleTimeUpdate);
+        video.addEventListener('play', () => setIsPlaying(true));
+        video.addEventListener('pause', () => setIsPlaying(false));
+      }
+
+      video.addEventListener('loadeddata', () => setLoading(false), { once: true });
+      video.addEventListener('canplay', () => setLoading(false), { once: true });
+      video.addEventListener('error', () => {
+        console.error('[PlexPlayer] native error:', video.error?.message, video.error?.code);
+        setError('Playback failed — check server logs for details');
+      }, { once: true });
+      video.play().catch(() => {});
+    }
+
+    return () => {
+      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+    };
   }, [playInfo]);
 
   // Escape key
@@ -93,13 +187,16 @@ export default function PlexPlayer({ item, onClose }) {
     const video = videoRef.current;
     if (!video) return;
     removeSubtitleTracks();
+    let subUrl = sub.downloadUrl
+      ? `/api/subtitles/download?url=${encodeURIComponent(sub.downloadUrl)}`
+      : `/api/subtitles/download?fileId=${sub.fileId}`;
+    const token = localStorage.getItem('mediavault_token');
+    if (token) subUrl += `&token=${encodeURIComponent(token)}`;
     const track = document.createElement('track');
     track.kind = 'subtitles';
     track.label = sub.title;
     track.srclang = sub.language;
-    track.src = sub.downloadUrl
-      ? `/api/subtitles/download?url=${encodeURIComponent(sub.downloadUrl)}`
-      : `/api/subtitles/download?fileId=${sub.fileId}`;
+    track.src = subUrl;
     track.default = true;
     video.appendChild(track);
     track.addEventListener('load', () => {
@@ -167,16 +264,46 @@ export default function PlexPlayer({ item, onClose }) {
     video.querySelectorAll('track').forEach((t) => t.remove());
   }
 
+  function handleSeek(targetSeconds) {
+    const video = videoRef.current;
+    if (!video || !playInfo) return;
+
+    setTimeOffset(targetSeconds);
+    setDisplayTime(targetSeconds);
+    setSeekbarValue(targetSeconds);
+
+    const token = localStorage.getItem('mediavault_token');
+    const baseUrl = playInfo.streamUrl;
+    const sep = baseUrl.includes('?') ? '&' : '?';
+    let newUrl = `${baseUrl}${sep}start=${Math.floor(targetSeconds)}`;
+    if (token) newUrl += `&token=${encodeURIComponent(token)}`;
+
+    video.src = newUrl;
+    video.play().catch(() => {});
+  }
+
+  function formatTime(seconds) {
+    if (!seconds || seconds < 0) return '0:00';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
   function loadEmbeddedSub(sub) {
     setActiveSub(sub.id);
     const video = videoRef.current;
     if (!video || !sub.url) return;
     removeSubtitleTracks();
+    const token = localStorage.getItem('mediavault_token');
+    const sep = sub.url.includes('?') ? '&' : '?';
+    const subUrl = token ? `${sub.url}${sep}token=${encodeURIComponent(token)}` : sub.url;
     const track = document.createElement('track');
     track.kind = 'subtitles';
     track.label = sub.title;
     track.srclang = sub.code || 'en';
-    track.src = sub.url;
+    track.src = subUrl;
     track.default = true;
     video.appendChild(track);
     if (video.textTracks[0]) video.textTracks[0].mode = 'showing';
@@ -198,6 +325,27 @@ export default function PlexPlayer({ item, onClose }) {
             </svg>
           </button>
           <h2 className="text-white text-sm font-medium truncate flex-1">{title}</h2>
+          {/* Playback mode + codec info */}
+          <div className="flex items-center gap-2 shrink-0">
+            {playInfo?.playbackMode && (
+              <span className={`text-[9px] px-2 py-1 rounded font-bold uppercase tracking-wider ${
+                playInfo.playbackMode === 'direct' ? 'bg-green-500/20 text-green-400' :
+                playInfo.playbackMode === 'remux' ? 'bg-blue-500/20 text-blue-400' :
+                playInfo.playbackMode === 'remux-audio' ? 'bg-yellow-500/20 text-yellow-400' :
+                'bg-orange-500/20 text-orange-400'
+              }`}>
+                {playInfo.playbackMode === 'direct' ? 'ORIGINAL' :
+                 playInfo.playbackMode === 'remux' ? 'REMUX' :
+                 playInfo.playbackMode === 'remux-audio' ? 'REMUX+AUDIO' :
+                 'TRANSCODE'}
+              </span>
+            )}
+            {mediaInfo && (
+              <span className="text-[9px] text-vault-muted bg-white/10 px-2 py-1 rounded font-mono">
+                {mediaInfo}
+              </span>
+            )}
+          </div>
           <button
             onClick={() => setShowSubMenu(!showSubMenu)}
             className={`p-2 rounded-full hover:bg-white/10 transition-colors ${activeSub ? 'text-vault-teal' : 'text-white'}`}
@@ -350,14 +498,71 @@ export default function PlexPlayer({ item, onClose }) {
       )}
 
       {/* Video */}
-      <video ref={videoRef} className="flex-1 w-full h-full object-contain bg-black" controls autoPlay crossOrigin="anonymous" />
+      <video
+        ref={videoRef}
+        className="flex-1 w-full h-full object-contain bg-black"
+        controls={playInfo?.playbackMode !== 'remux' && playInfo?.playbackMode !== 'remux-audio'}
+        autoPlay
+        crossOrigin="anonymous"
+      />
+
+      {/* Custom controls for remux modes */}
+      {(playInfo?.playbackMode === 'remux' || playInfo?.playbackMode === 'remux-audio') && (
+        <div className="absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-black/90 to-transparent pt-8 pb-3 px-4">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                const video = videoRef.current;
+                if (video) {
+                  if (video.paused) video.play();
+                  else video.pause();
+                }
+              }}
+              className="p-2 rounded hover:bg-white/10 transition-colors text-white shrink-0"
+              title={isPlaying ? 'Pause' : 'Play'}
+            >
+              {isPlaying ? (
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              )}
+            </button>
+
+            <span className="text-xs text-white/80 shrink-0 w-12 text-right">
+              {formatTime(displayTime)}
+            </span>
+
+            <input
+              type="range"
+              min="0"
+              max={Math.ceil(totalDuration)}
+              value={seekbarValue}
+              onChange={(e) => {
+                const target = parseFloat(e.target.value);
+                handleSeek(target);
+              }}
+              className="flex-1 h-1 bg-white/20 rounded appearance-none cursor-pointer accent-vault-teal"
+            />
+
+            <span className="text-xs text-white/80 shrink-0 w-12">
+              {formatTime(totalDuration)}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Loading overlay */}
       {loading && !error && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/60 pointer-events-none">
           <div className="flex flex-col items-center gap-3">
             <div className="w-10 h-10 border-3 border-vault-teal/30 border-t-vault-teal rounded-full animate-spin" />
-            <span className="text-white/60 text-sm">Loading stream...</span>
+            <span className="text-white/60 text-sm">
+              {playInfo?.playbackReason || 'Loading stream...'}
+            </span>
           </div>
         </div>
       )}

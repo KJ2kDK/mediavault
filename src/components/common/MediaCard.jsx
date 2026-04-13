@@ -1,5 +1,14 @@
 import { useState } from 'react';
 
+// Append JWT token to internal API URLs so <img> tags pass the auth wall
+function authedUrl(url) {
+  if (!url || !url.startsWith('/api/')) return url;
+  const token = localStorage.getItem('mediavault_token');
+  if (!token) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
+
 export default function MediaCard({ item, size = 'md', onPlay, onInfo, isBookmarked, onBookmark }) {
   const [hovered, setHovered] = useState(false);
   const [imgError, setImgError] = useState(false);
@@ -34,7 +43,7 @@ export default function MediaCard({ item, size = 'md', onPlay, onInfo, isBookmar
       {/* Background */}
       {item.thumb && !imgError ? (
         <img
-          src={item.thumb}
+          src={authedUrl(item.thumb)}
           alt={item.title}
           className="absolute inset-0 w-full h-full object-cover"
           onError={() => setImgError(true)}

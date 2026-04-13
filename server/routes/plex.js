@@ -1,9 +1,72 @@
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import https from 'https';
+import { spawn, execSync } from 'child_process';
 
 const router = Router();
 const agent = new https.Agent({ rejectUnauthorized: false });
+
+// ── FFmpeg detection ─────────────────────────────────────────────────────────
+let FFMPEG_PATH = 'ffmpeg';
+try {
+  execSync('ffmpeg -version', { stdio: 'ignore' });
+  console.log('[plex] FFmpeg found in PATH');
+} catch {
+  // Common Windows paths
+  const winPaths = [
+    'C:\\ffmpeg\\bin\\ffmpeg.exe',
+    'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe',
+    'C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe',
+  ];
+  for (const p of winPaths) {
+    try { execSync(`"${p}" -version`, { stdio: 'ignore' }); FFMPEG_PATH = p; break; } catch {}
+  }
+  if (FFMPEG_PATH === 'ffmpeg') console.warn('[plex] FFmpeg not found — remuxing disabled, will fall back to Plex transcode');
+}
+
+// Browser-compatible codecs
+const BROWSER_VIDEO = new Set(['h264', 'h265', 'hevc', 'vp8', 'vp9', 'av1']);
+const BROWSER_AUDIO = new Set(['aac', 'mp3', 'opus', 'flac', 'vorbis', 'ac3', 'eac3']);
+const BROWSER_CONTAINERS = new Set(['mp4', 'mov', 'webm']);
+// Audio codecs safe for copy into fragmented MP4 (empty_moov).
+// AC3/EAC3 cause "Cannot write moov atom before EAC3 packets parsed" so must be transcoded during remux.
+const REMUX_SAFE_AUDIO = new Set(['aac', 'mp3', 'opus', 'flac', 'vorbis']);
+
+// Determine playback strategy for a given media file
+function analyzePlayback(media, part) {
+  const container = (media.container || '').toLowerCase();
+  const videoStream = (part.Stream || []).find((s) => s.streamType === 1);
+  const audioStream = (part.Stream || []).find((s) => s.streamType === 2);
+  const videoCodec = (videoStream?.codec || '').toLowerCase();
+  const audioCodec = (audioStream?.codec || '').toLowerCase();
+
+  const info = {
+    container,
+    videoCodec,
+    audioCodec,
+    resolution: media.width && media.height ? `${media.width}x${media.height}` : null,
+    bitrate: media.bitrate ? `${Math.round(media.bitrate / 1000)}Mbps` : null,
+    audioChannels: audioStream?.channels || 2,
+  };
+
+  // Case 1: Already browser-compatible container + codecs → direct play
+  if (BROWSER_CONTAINERS.has(container) && BROWSER_VIDEO.has(videoCodec) && BROWSER_AUDIO.has(audioCodec)) {
+    return { ...info, mode: 'direct', reason: 'File is browser-compatible — playing original' };
+  }
+
+  // Case 2: Compatible codecs AND audio safe for fMP4 remux → container change only
+  if (BROWSER_VIDEO.has(videoCodec) && REMUX_SAFE_AUDIO.has(audioCodec)) {
+    return { ...info, mode: 'remux', reason: `Remuxing ${container.toUpperCase()}→MP4 — original quality preserved` };
+  }
+
+  // Case 3: Compatible video but audio needs transcode (AC3/EAC3/DTS/TrueHD etc.)
+  if (BROWSER_VIDEO.has(videoCodec)) {
+    return { ...info, mode: 'remux-audio', reason: `Original video, transcoding ${audioCodec.toUpperCase()} audio→AAC` };
+  }
+
+  // Case 4: Incompatible video → full transcode via Plex HLS
+  return { ...info, mode: 'transcode', reason: `${videoCodec.toUpperCase()} needs full transcode` };
+}
 
 const plexFetch = async (path, token, serverUrl) => {
   const url = `${serverUrl}${path}`;
@@ -142,6 +205,76 @@ router.get('/libraries', async (req, res) => {
   }
 });
 
+// Trigger Plex library scan on all servers, then return refreshed library data
+router.post('/refresh', async (req, res) => {
+  try {
+    const token = process.env.PLEX_TOKEN;
+    if (!token) return res.status(400).json({ error: 'No Plex token configured' });
+
+    const servers = await discoverServers(token);
+    const scanned = [];
+
+    for (const server of servers) {
+      try {
+        const data = await plexFetch('/library/sections', token, server.url);
+        const sections = data.MediaContainer?.Directory || [];
+        for (const section of sections) {
+          // Trigger a scan for each library section
+          await fetch(`${server.url}/library/sections/${section.key}/refresh?X-Plex-Token=${token}`, {
+            method: 'GET',
+            agent: server.url.startsWith('https') ? agent : undefined,
+          });
+          scanned.push({ server: server.name, section: section.title });
+        }
+      } catch (err) {
+        console.error(`[plex] refresh ${server.name}: ${err.message}`);
+      }
+    }
+
+    console.log(`[plex] Triggered scan on ${scanned.length} sections`);
+
+    // Wait a moment for Plex to start processing, then return fresh library data
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // Clear server cache to force re-discovery
+    serversCache = null;
+
+    // Re-fetch the library
+    const library = {};
+    for (const server of servers) {
+      try {
+        const sectionsData = await plexFetch('/library/sections', token, server.url);
+        const sections = sectionsData.MediaContainer?.Directory || [];
+        for (const section of sections) {
+          try {
+            const recent = await plexFetch(
+              `/library/sections/${section.key}/recentlyAdded?X-Plex-Container-Start=0&X-Plex-Container-Size=15`,
+              token, server.url
+            );
+            const items = (recent.MediaContainer?.Metadata || []).map((m) => mapPlexItem(m, server));
+            if (items.length > 0) library[`${section.title} — ${server.name}`] = items;
+          } catch {}
+          try {
+            const onDeck = await plexFetch(
+              `/library/sections/${section.key}/onDeck?X-Plex-Container-Start=0&X-Plex-Container-Size=15`,
+              token, server.url
+            );
+            const items = (onDeck.MediaContainer?.Metadata || []).map((m) => mapPlexItem(m, server));
+            if (items.length > 0) {
+              const key = `Continue Watching — ${server.name}`;
+              library[key] = [...(library[key] || []), ...items];
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+
+    res.json({ scanned, library });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Search across all servers
 router.get('/search', async (req, res) => {
   try {
@@ -203,41 +336,80 @@ router.get('/play/:id', async (req, res) => {
 
     // Subtitle streams from the file
     const rawSubs = (part.Stream || []).filter((s) => s.streamType === 3);
-    const subtitles = rawSubs
-      .filter((s) => ['srt', 'ass', 'ssa', 'subrip', 'vtt', 'text'].includes(s.codec))
-      .map((s) => {
-        // Use key if available, otherwise use Plex subtitle extraction endpoint
-        const subUrl = s.key
-          ? `/api/plex/thumb?server=${encodeURIComponent(serverUrl)}&path=${encodeURIComponent(s.key)}`
-          : `/api/plex/subtitle?server=${encodeURIComponent(serverUrl)}&partId=${part.id}&streamId=${s.id}&ratingKey=${req.params.id}`;
-        return {
-          id: s.id,
-          language: s.language || s.languageCode || 'Unknown',
-          code: s.languageCode || '',
-          title: s.displayTitle || s.language || 'Unknown',
-          codec: s.codec,
-          url: subUrl,
-        };
-      });
+    const textSubs = rawSubs.filter((s) => ['srt', 'ass', 'ssa', 'subrip', 'vtt', 'text'].includes(s.codec));
 
-    // Transcoded stream URL (audio → AAC, video direct-stream when possible)
-    const transcodeUrl = `/api/plex/stream?server=${encodeURIComponent(serverUrl)}&id=${req.params.id}&mode=transcode`;
-    // Direct stream URL (no transcode — works if audio is browser-compatible)
-    const directUrl = part.key ? `/api/plex/stream?server=${encodeURIComponent(serverUrl)}&path=${encodeURIComponent(part.key)}&mode=direct` : null;
+    // Track language occurrences to label duplicates with distinguishing info
+    const langCount = {};
+    for (const s of textSubs) {
+      const lang = s.language || s.languageCode || 'Unknown';
+      langCount[lang] = (langCount[lang] || 0) + 1;
+    }
+    const langSeen = {};
 
-    // Check if audio needs transcoding
-    const audioStream = (part.Stream || []).find((s) => s.streamType === 2);
-    const audioCodec = audioStream?.codec || '';
-    const needsTranscode = !['aac', 'mp3', 'opus', 'flac'].includes(audioCodec);
+    const subtitles = textSubs.map((s) => {
+      const lang = s.language || s.languageCode || 'Unknown';
+      langSeen[lang] = (langSeen[lang] || 0) + 1;
+
+      // Build a descriptive title that distinguishes duplicate languages
+      let title = s.displayTitle || lang;
+      if (langCount[lang] > 1) {
+        // Add distinguishing details: forced, SDH, codec, or track number
+        const tags = [];
+        if (s.forced) tags.push('Forced');
+        if (s.hearingImpaired || (s.displayTitle && /sdh|hearing/i.test(s.displayTitle))) tags.push('SDH');
+        if (s.title && s.title !== s.displayTitle) tags.push(s.title);
+        if (tags.length === 0) tags.push(`Track ${langSeen[lang]}`);
+        title = `${lang} (${tags.join(', ')})`;
+      }
+
+      const subUrl = `/api/plex/subtitle?server=${encodeURIComponent(serverUrl)}&partId=${part.id}&streamId=${s.id}&ratingKey=${req.params.id}`;
+      return {
+        id: s.id,
+        language: lang,
+        code: s.languageCode || '',
+        title,
+        codec: s.codec,
+        url: subUrl,
+      };
+    });
+
+    // Analyze what the file needs for browser playback
+    const playback = analyzePlayback(media, part);
+    const enc = (s) => encodeURIComponent(s);
+    const partPath = part.key;
+
+    let streamUrl;
+    if (playback.mode === 'direct') {
+      // Original file, zero processing
+      streamUrl = `/api/plex/stream?server=${enc(serverUrl)}&path=${enc(partPath)}&mode=direct`;
+    } else if (playback.mode === 'remux' && FFMPEG_PATH) {
+      // FFmpeg remux only — container change, original video+audio bits preserved
+      streamUrl = `/api/plex/stream?server=${enc(serverUrl)}&path=${enc(partPath)}&mode=remux`;
+    } else if (playback.mode === 'remux-audio' && FFMPEG_PATH) {
+      // FFmpeg remux + audio transcode only — original video preserved
+      streamUrl = `/api/plex/stream?server=${enc(serverUrl)}&path=${enc(partPath)}&mode=remux-audio&channels=${playback.audioChannels}`;
+    } else {
+      // Fall back to Plex HLS transcode (FFmpeg not available or incompatible video)
+      streamUrl = `/api/plex/stream?server=${enc(serverUrl)}&id=${req.params.id}&mode=transcode`;
+    }
+
+    console.log(`[plex] Play ${item.title}: ${playback.mode} — ${playback.reason}`);
 
     res.json({
       title: item.title,
       episode: item.type === 'episode' ? `S${String(item.parentIndex).padStart(2, '0')}E${String(item.index).padStart(2, '0')}` : null,
       showTitle: item.grandparentTitle || null,
       duration: item.duration || 0,
-      streamUrl: needsTranscode ? transcodeUrl : (directUrl || transcodeUrl),
+      streamUrl,
+      playbackMode: playback.mode,
+      playbackReason: playback.reason,
+      container: playback.container,
+      videoCodec: playback.videoCodec,
+      audioCodec: playback.audioCodec,
+      resolution: playback.resolution,
+      bitrate: playback.bitrate,
       subtitles,
-      thumb: item.thumb ? `/api/plex/thumb?server=${encodeURIComponent(serverUrl)}&path=${encodeURIComponent(item.thumb)}` : null,
+      thumb: item.thumb ? `/api/plex/thumb?server=${enc(serverUrl)}&path=${enc(item.thumb)}` : null,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -319,55 +491,185 @@ function assToVtt(ass) {
 }
 
 // ── GET /api/plex/stream ─────────────────────────────────────────────────────
-// mode=direct: proxy raw file with Range support
-// mode=transcode: use Plex transcoder (audio→AAC, video direct-stream)
+// mode=direct:      proxy raw file with Range support (browser-compatible MP4)
+// mode=remux:       FFmpeg remux only — container MKV→fMP4, original codecs preserved
+// mode=remux-audio: FFmpeg remux + audio transcode (DTS/TrueHD→AAC), video untouched
+// mode=transcode:   Plex HLS transcode fallback (for truly incompatible video codecs)
+// mode=segment:     proxy individual HLS segment for transcode mode
 router.get('/stream', async (req, res) => {
+  const token = process.env.PLEX_TOKEN;
+  const { server: serverUrl, path, id, mode, start, channels } = req.query;
+  if (!token || !serverUrl) return res.status(400).end();
+
   try {
-    const token = process.env.PLEX_TOKEN;
-    const { server: serverUrl, path, id, mode } = req.query;
-    if (!token || !serverUrl) return res.status(400).end();
+    // ── Direct play — proxy raw file, supports Range for seeking ─────────
+    if (mode === 'direct' && path) {
+      const url = `${serverUrl}${path}?X-Plex-Token=${token}`;
+      const headers = { 'X-Plex-Token': token };
+      if (req.headers.range) headers.Range = req.headers.range;
 
-    let url;
-    const headers = {};
+      const streamRes = await fetch(url, {
+        headers,
+        agent: serverUrl.startsWith('https') ? agent : undefined,
+      });
 
+      res.status(streamRes.status);
+      for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+        if (streamRes.headers.get(h)) res.set(h, streamRes.headers.get(h));
+      }
+      streamRes.body.pipe(res);
+      return;
+    }
+
+    // ── FFmpeg remux — original quality, just change container ───────────
+    if ((mode === 'remux' || mode === 'remux-audio') && path) {
+      const inputUrl = `${serverUrl}${path}?X-Plex-Token=${token}`;
+
+      const args = [
+        '-hide_banner', '-loglevel', 'warning',
+      ];
+
+      // Seek support: ?start=120 → skip to 2min
+      if (start && Number(start) > 0) {
+        args.push('-ss', String(start));
+      }
+
+      args.push(
+        '-i', inputUrl,
+        '-c:v', 'copy',                    // Video: always copy (original quality)
+      );
+
+      if (mode === 'remux-audio') {
+        // Audio needs transcode (DTS/TrueHD → AAC)
+        args.push(
+          '-c:a', 'aac',
+          '-b:a', '320k',                   // High quality AAC
+          '-ac', String(channels || 2),      // Preserve channel count if stereo, downmix if surround
+        );
+      } else {
+        args.push('-c:a', 'copy');           // Audio: copy original
+      }
+
+      args.push(
+        '-map', '0:v:0',                    // Map only first video stream
+        '-map', '0:a:0',                    // Map only first audio stream
+        '-sn',                               // Skip subtitles (handled via separate subtitle endpoint)
+        '-f', 'mp4',                         // Output: MP4 container
+        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',  // Fragmented MP4 for streaming
+        'pipe:1',                            // Pipe to stdout
+      );
+
+      console.log(`[plex] FFmpeg ${mode}: ${FFMPEG_PATH} ${args.slice(-6).join(' ')}`);
+
+      const ffmpeg = spawn(FFMPEG_PATH, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      // Log stderr for debugging
+      let stderrBuf = '';
+      ffmpeg.stderr.on('data', (chunk) => {
+        stderrBuf += chunk.toString();
+        if (stderrBuf.length > 2000) stderrBuf = stderrBuf.slice(-1000);
+      });
+
+      ffmpeg.on('error', (err) => {
+        console.error(`[plex] FFmpeg spawn error: ${err.message}`);
+        if (!res.headersSent) res.status(500).json({ error: 'FFmpeg not available' });
+      });
+
+      ffmpeg.on('close', (code) => {
+        if (code && code !== 0 && code !== 255) {
+          console.error(`[plex] FFmpeg exited ${code}: ${stderrBuf.slice(-500)}`);
+        }
+      });
+
+      // Client disconnected — kill FFmpeg
+      req.on('close', () => {
+        if (!ffmpeg.killed) ffmpeg.kill('SIGTERM');
+      });
+
+      res.set('Content-Type', 'video/mp4');
+      res.set('Transfer-Encoding', 'chunked');
+      ffmpeg.stdout.pipe(res);
+      return;
+    }
+
+    // ── Plex HLS transcode fallback (incompatible video codecs) ──────────
     if (mode === 'transcode' && id) {
       const params = new URLSearchParams({
         path: `/library/metadata/${id}`,
         mediaIndex: '0',
         partIndex: '0',
-        protocol: 'http',
+        protocol: 'hls',
         directPlay: '0',
-        directStream: '1',
+        directStream: '0',
+        directStreamAudio: '0',
         videoQuality: '100',
         maxVideoBitrate: '40000',
         audioBoost: '100',
         subtitles: 'none',
+        copyts: '1',
+        hasMDE: '1',
         'X-Plex-Token': token,
         'X-Plex-Client-Identifier': 'mediavault',
         'X-Plex-Product': 'MediaVault',
         'X-Plex-Platform': 'Chrome',
       });
-      url = `${serverUrl}/video/:/transcode/universal/start.mkv?${params}`;
-    } else if (path) {
-      url = `${serverUrl}${path}?X-Plex-Token=${token}`;
-      headers['X-Plex-Token'] = token;
-      if (req.headers.range) headers.Range = req.headers.range;
-    } else {
-      return res.status(400).end();
+      const hlsUrl = `${serverUrl}/video/:/transcode/universal/start.m3u8?${params}`;
+
+      const hlsRes = await fetch(hlsUrl, {
+        agent: serverUrl.startsWith('https') ? agent : undefined,
+      });
+
+      if (!hlsRes.ok) return res.status(hlsRes.status).end();
+
+      const contentType = hlsRes.headers.get('content-type') || '';
+
+      if (contentType.includes('mpegurl') || contentType.includes('m3u')) {
+        let body = await hlsRes.text();
+        const proxyBase = `/api/plex/stream?server=${encodeURIComponent(serverUrl)}&mode=segment&path=`;
+
+        body = body.replace(new RegExp(serverUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(/[^\\s]+)', 'g'), (_, p) => {
+          return `${proxyBase}${encodeURIComponent(p)}`;
+        });
+
+        body = body.split('\n').map((line) => {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('http')) return line;
+          const resolved = trimmed.startsWith('/') ? trimmed : `/video/:/transcode/universal/${trimmed}`;
+          return `${proxyBase}${encodeURIComponent(resolved)}`;
+        }).join('\n');
+
+        res.set('Content-Type', 'application/vnd.apple.mpegurl');
+        return res.send(body);
+      }
+
+      res.status(hlsRes.status);
+      for (const h of ['content-type', 'content-length']) {
+        if (hlsRes.headers.get(h)) res.set(h, hlsRes.headers.get(h));
+      }
+      hlsRes.body.pipe(res);
+      return;
     }
 
-    const streamRes = await fetch(url, {
-      headers,
-      agent: serverUrl.startsWith('https') ? agent : undefined,
-    });
-
-    res.status(streamRes.status);
-    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
-      if (streamRes.headers.get(h)) res.set(h, streamRes.headers.get(h));
+    // ── HLS segment proxy ────────────────────────────────────────────────
+    if (mode === 'segment' && path) {
+      const segUrl = `${serverUrl}${path}${path.includes('?') ? '&' : '?'}X-Plex-Token=${token}`;
+      const segRes = await fetch(segUrl, {
+        agent: serverUrl.startsWith('https') ? agent : undefined,
+      });
+      res.status(segRes.status);
+      for (const h of ['content-type', 'content-length']) {
+        if (segRes.headers.get(h)) res.set(h, segRes.headers.get(h));
+      }
+      segRes.body.pipe(res);
+      return;
     }
-    streamRes.body.pipe(res);
-  } catch {
-    res.status(502).end();
+
+    res.status(400).end();
+  } catch (err) {
+    console.error('[plex] stream error:', err.message);
+    if (!res.headersSent) res.status(502).end();
   }
 });
 

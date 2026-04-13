@@ -166,6 +166,23 @@ router.get('/now', (req, res) => {
       else if (!slot.next) slot.next = row;
     }
 
+    // For any ids with no data, try case-insensitive fallback (provider epg_id casing may differ)
+    const missing = ids.filter((id) => !epg[id].now);
+    if (missing.length) {
+      for (const id of missing) {
+        const ciRows = db.prepare(`
+          SELECT channel_id, title, start, stop, description
+          FROM   epg_programmes
+          WHERE  lower(channel_id) = lower(?) AND stop > ?
+          ORDER  BY start ASC LIMIT 2
+        `).all(id, nowSec);
+        if (ciRows.length) {
+          epg[id].now = ciRows[0];
+          if (ciRows[1]) epg[id].next = ciRows[1];
+        }
+      }
+    }
+
     res.json({ epg });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -206,12 +223,22 @@ router.get('/schedule', (req, res) => {
     if (!id) return res.status(400).json({ error: 'id required' });
 
     const nowSec = Math.floor(Date.now() / 1000);
-    const programmes = db.prepare(`
+    let programmes = db.prepare(`
       SELECT channel_id, title, start, stop, description
       FROM   epg_programmes
       WHERE  channel_id = ? AND stop > ? AND start < ?
       ORDER  BY start ASC
     `).all(id, nowSec - 3600, nowSec + 86400);
+
+    // Fallback: case-insensitive match if exact match yields nothing
+    if (!programmes.length) {
+      programmes = db.prepare(`
+        SELECT channel_id, title, start, stop, description
+        FROM   epg_programmes
+        WHERE  lower(channel_id) = lower(?) AND stop > ? AND start < ?
+        ORDER  BY start ASC
+      `).all(id, nowSec - 3600, nowSec + 86400);
+    }
 
     res.json({ programmes });
   } catch (err) {

@@ -7,6 +7,7 @@ import LiveTVPage from '../../pages/LiveTVPage';
 import NewsPage from '../../pages/NewsPage';
 import DownloadsPage from '../../pages/DownloadsPage';
 import SettingsPage from '../../pages/SettingsPage';
+import ChatPanel from '../chat/ChatPanel';
 
 const PAGES = {
   home: HomePage,
@@ -55,6 +56,7 @@ export default function MainLayout({ onLogout }) {
           />
         </main>
       </div>
+      <ChatPanel onNavigate={handleNavigate} />
     </div>
   );
 }

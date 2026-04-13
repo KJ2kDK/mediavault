@@ -4,9 +4,10 @@ import { dirname, join } from 'path';
 import { mkdirSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-mkdirSync(__dirname, { recursive: true });
+const dbDir = process.env.MEDIAVAULT_DB_DIR || __dirname;
+mkdirSync(dbDir, { recursive: true });
 
-const db = new Database(join(__dirname, 'mediavault.db'));
+const db = new Database(join(dbDir, 'mediavault.db'));
 
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
@@ -77,6 +78,45 @@ db.exec(`
     key   TEXT PRIMARY KEY,
     value TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS vod_categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    country TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS vod_items (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    type TEXT DEFAULT 'movie',
+    year TEXT,
+    rating TEXT,
+    genre TEXT,
+    category_id TEXT,
+    thumb TEXT,
+    url TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS series_categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    country TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS series_items (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    type TEXT DEFAULT 'show',
+    year TEXT,
+    rating TEXT,
+    genre TEXT,
+    category_id TEXT,
+    thumb TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // ── EPG ──────────────────────────────────────────────────────────────────────
@@ -129,6 +169,8 @@ db.exec(`
 
 // Add sent_at column if it doesn't exist yet (migration)
 try { db.exec('ALTER TABLE rss_items ADD COLUMN sent_at INTEGER'); } catch {}
+// Add metadata columns for UNIT3D tracker feeds (size, seeders, resolution, etc.)
+try { db.exec('ALTER TABLE rss_items ADD COLUMN meta TEXT'); } catch {}
 
 // ── Error Logs ────────────────────────────────────────────────────────────────
 db.exec(`

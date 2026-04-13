@@ -15,6 +15,8 @@ import logsRoutes, { dbLog } from './routes/logs.js';
 import subtitlesRoutes from './routes/subtitles.js';
 import predbRoutes from './routes/predb.js';
 import predbnetRoutes from './routes/predbnet.js';
+import chatRoutes from './routes/chat.js';
+import nordicbytesRoutes from './routes/nordicbytes.js';
 import db from './db/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +35,14 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', version: '0.1.0' });
 });
 
+// ── Media delivery routes — support token via query param (for <img> / HLS.js)
+// These bypass the strict Bearer-header requirement since browsers can't add
+// custom headers to <img src> or HLS.js manifest/segment requests.
+// The requireAuth middleware now also checks ?token= query param.
+
+// ── RSS ingest — public endpoint for browser-proxied Cloudflare feeds ────────
+app.use('/api/rss-ingest', rssRoutes);
+
 // ── Auth wall — all API routes below require a valid JWT ─────────────────────
 app.use('/api', requireAuth);
 
@@ -47,6 +57,8 @@ app.use('/api/subtitles', subtitlesRoutes);
 app.use('/api/predb', predbRoutes);
 app.use('/api/predbnet', predbnetRoutes);
 app.use('/api/logs', logsRoutes);
+app.use('/api/chat', chatRoutes);
+app.use('/api/nordicbytes', nordicbytesRoutes);
 
 // ── Daily IPTV auto-refresh (checks every 30 min, syncs if > 23h old) ─────────
 setInterval(() => {

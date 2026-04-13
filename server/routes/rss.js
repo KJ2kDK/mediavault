@@ -9,23 +9,216 @@ const router = Router();
 const parser = new RSSParser();
 const execFileAsync = promisify(execFile);
 
-async function fetchFeedXml(url, cookie) {
-  // Use curl via execFile (no shell) — avoids TLS fingerprint blocking and shell escaping issues
-  const args = [
-    '-s', '-L', '--max-time', '15',
-    '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
-    '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  ];
-  if (cookie) args.push('-b', cookie);
-  args.push(url);
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
 
-  try {
-    const { stdout } = await execFileAsync('curl', args, { maxBuffer: 10 * 1024 * 1024 });
-    console.log(`[rss-debug] ${url} → first 200 chars: ${stdout.slice(0, 200)}`);
-    return stdout;
-  } catch (err) {
-    throw new Error(`curl failed: ${err.message}`);
+// ── Parse UNIT3D-style RSS description into structured metadata ─────────────
+// ── Metadata parsers ────────────────────────────────────────────────────────
+// Extract structured metadata from RSS item content.  Tries UNIT3D format
+// first, then falls back to a generic torrent-RSS parser that works with
+// common feeds (TorrentGalaxy, RARBG-style, Jackett, etc.).
+
+function parseUnit3dMeta(content) {
+  if (!content) return null;
+  if (!content.includes('<strong>') || !content.includes('Seeders')) return null;
+
+  const meta = { _src: 'unit3d' };
+  const extract = (label) => {
+    const re = new RegExp(`<strong>${label}<\\/strong>\\s*:\\s*([^<]+)`, 'i');
+    const m = content.match(re);
+    return m ? m[1].replace(/\|/g, '').trim() : null;
+  };
+
+  meta.type       = extract('Type');
+  meta.resolution = extract('Resolution');
+  meta.size       = extract('Size');
+  meta.seeders    = parseInt(extract('Seeders')) || 0;
+  meta.leechers   = parseInt(extract('Leechers')) || 0;
+  meta.completed  = parseInt(extract('Completed')) || 0;
+  meta.uploader   = extract('Uploader')?.replace(/anonymous uploader/i, 'Anonymous').trim() || null;
+
+  // IMDB — full URL or shorthand "IMDB Link:tt12345"
+  const imdb = content.match(/imdb\.com\/title\/(tt\d+)/) || content.match(/IMDB\s*(?:Link)?[:\s]*(tt\d+)/i);
+  if (imdb) meta.imdbId = imdb[1];
+
+  // TMDB — full URL or shorthand "TMDB Link: 12345"
+  const tmdb = content.match(/themoviedb\.org\/(?:movie|tv)\/(\d+)/) || content.match(/TMDB\s*(?:Link)?[:\s]*(\d+)/i);
+  if (tmdb) meta.tmdbId = tmdb[1];
+
+  // TVDB — full URL or shorthand "TVDB Link:12345"
+  const tvdb = content.match(/thetvdb\.com\/.*?id=(\d+)/) || content.match(/TVDB\s*(?:Link)?[:\s]*(\d+)/i);
+  if (tvdb) meta.tvdbId = tvdb[1];
+
+  const detailMatch = content.match(/href="[^"]*\/torrents\/(\d+)/);
+  if (detailMatch) meta.detailId = detailMatch[1];
+
+  return meta;
+}
+
+function parseGenericMeta(item) {
+  // Tries to pull torrent-style metadata from any RSS item's content/title
+  const content = item.content || item['content:encoded'] || item.contentSnippet || '';
+  const title = item.title || '';
+  const combined = `${title} ${content}`;
+  const meta = {};
+
+  // Size — "1.5 GB", "700 MB", "4.2 GiB" etc.
+  const sizeMatch = combined.match(/\b(\d+(?:\.\d+)?\s*(?:GB|GiB|MB|MiB|TB|TiB|KB|KiB))\b/i);
+  if (sizeMatch) meta.size = sizeMatch[1].trim();
+
+  // Resolution — 2160p/4K, 1080p, 720p, 480p
+  const resMatch = combined.match(/\b(2160p|4K|1080p|720p|480p|UHD)\b/i);
+  if (resMatch) meta.resolution = resMatch[1] === '4K' ? '2160p' : resMatch[1];
+
+  // Quality/type — BluRay, WEB-DL, WEBRip, HDRip, BDRip, HDTV, DVDRip, CAM etc.
+  const typeMatch = combined.match(/\b(BluRay|Blu-Ray|BDRip|BRRip|WEB-DL|WEBRip|WEB|HDRip|HDTV|DVDRip|DVDScr|PDTV|CAM|TS|HC|REMUX)\b/i);
+  if (typeMatch) meta.type = typeMatch[1];
+
+  // Seeders / Leechers — various formats: "S: 150 L: 20", "Seeders: 50", etc.
+  const seedMatch = content.match(/(?:Seeders?|Seeds?|S)\s*[:=]\s*(\d+)/i);
+  const leechMatch = content.match(/(?:Leechers?|Leech(?:es)?|L)\s*[:=]\s*(\d+)/i);
+  if (seedMatch) meta.seeders = parseInt(seedMatch[1]);
+  if (leechMatch) meta.leechers = parseInt(leechMatch[1]);
+
+  // IMDB
+  const imdb = combined.match(/imdb\.com\/title\/(tt\d+)/) || combined.match(/(tt\d{7,})/);
+  if (imdb) meta.imdbId = imdb[1];
+
+  // TMDB
+  const tmdb = combined.match(/themoviedb\.org\/(?:movie|tv)\/(\d+)/);
+  if (tmdb) meta.tmdbId = tmdb[1];
+
+  // Enclosure size (many torrent RSS feeds put the file size in the enclosure length attribute)
+  if (!meta.size && item.enclosure?.length) {
+    const bytes = parseInt(item.enclosure.length);
+    if (bytes > 0) {
+      if (bytes >= 1073741824) meta.size = (bytes / 1073741824).toFixed(2) + ' GiB';
+      else if (bytes >= 1048576) meta.size = (bytes / 1048576).toFixed(1) + ' MiB';
+      else if (bytes >= 1024) meta.size = (bytes / 1024).toFixed(0) + ' KiB';
+    }
   }
+
+  // Codec — x264, x265, HEVC, H.264, H.265, AV1, VP9
+  const codecMatch = combined.match(/\b(x264|x265|H\.?264|H\.?265|HEVC|AV1|VP9|AAC|DTS(?:-HD)?|Atmos|TrueHD)\b/i);
+  if (codecMatch) meta.codec = codecMatch[1];
+
+  // Only return if we found something useful
+  return Object.keys(meta).length > 0 ? meta : null;
+}
+
+// Unified entry point: try UNIT3D first, then generic
+function extractMeta(item) {
+  const content = item.content || item['content:encoded'] || '';
+  return parseUnit3dMeta(content) || parseGenericMeta(item);
+}
+
+function isCloudflareChallenge(html) {
+  return html.includes('Just a moment') || html.includes('cf_chl_opt') || html.includes('challenge-platform');
+}
+
+// Get FlareSolverr URL from env or DB meta
+function getFlareSolverrUrl() {
+  if (process.env.FLARESOLVERR_URL) return process.env.FLARESOLVERR_URL;
+  try {
+    const row = db.prepare("SELECT value FROM iptv_meta WHERE key = 'flaresolverr_url'").get();
+    return row?.value || null;
+  } catch { return null; }
+}
+
+// Strategy 3: FlareSolverr — headless browser that solves Cloudflare JS challenges
+async function fetchViaFlareSolverr(url) {
+  const fsUrl = getFlareSolverrUrl();
+  if (!fsUrl) return null;
+
+  console.log(`[rss] ${url} → trying FlareSolverr at ${fsUrl}…`);
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 65000); // FlareSolverr can be slow
+    const res = await fetch(`${fsUrl}/v1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd: 'request.get', url, maxTimeout: 60000 }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const data = await res.json();
+
+    if (data.status === 'ok' && data.solution?.response) {
+      let html = data.solution.response;
+      if (isCloudflareChallenge(html)) {
+        console.log(`[rss] ${url} → FlareSolverr still got Cloudflare challenge`);
+        return null;
+      }
+      // FlareSolverr uses a real browser, so XML/RSS feeds get rendered as HTML
+      // with the actual XML content HTML-escaped inside <pre> tags. Detect and unescape.
+      if (html.includes('&lt;?xml') || html.includes('&lt;rss')) {
+        html = html
+          .replace(/^[\s\S]*?<pre[^>]*>/i, '')  // strip everything before <pre>
+          .replace(/<\/pre>[\s\S]*$/i, '')       // strip everything after </pre>
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&amp;/g, '&')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'");
+        console.log(`[rss] ${url} → FlareSolverr OK, unescaped XML (${html.length} bytes)`);
+      } else {
+        console.log(`[rss] ${url} → FlareSolverr OK (${html.length} bytes)`);
+      }
+      return html;
+    }
+    console.log(`[rss] ${url} → FlareSolverr returned status: ${data.status}, message: ${data.message || 'none'}`);
+    return null;
+  } catch (err) {
+    console.log(`[rss] ${url} → FlareSolverr failed: ${err.message}`);
+    return null;
+  }
+}
+
+async function fetchFeedXml(url, cookie) {
+  // Strategy 1: try Node native fetch (better TLS fingerprint than curl for Cloudflare)
+  try {
+    const headers = {
+      'User-Agent': BROWSER_UA,
+      'Accept': 'application/rss+xml, application/xml, text/xml, */*;q=0.8',
+    };
+    if (cookie) headers['Cookie'] = cookie;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(url, { headers, signal: controller.signal, redirect: 'follow' });
+    clearTimeout(timer);
+    const text = await res.text();
+    if (!isCloudflareChallenge(text) && text.includes('<')) {
+      console.log(`[rss] ${url} → native fetch OK (${text.length} bytes)`);
+      return text;
+    }
+    console.log(`[rss] ${url} → native fetch got Cloudflare challenge, trying curl…`);
+  } catch (err) {
+    console.log(`[rss] ${url} → native fetch failed: ${err.message}, trying curl…`);
+  }
+
+  // Strategy 2: curl fallback (different TLS fingerprint, sometimes works)
+  try {
+    const args = [
+      '-s', '-L', '--max-time', '15',
+      '-A', BROWSER_UA,
+      '-H', 'Accept: application/rss+xml, application/xml, text/xml, */*;q=0.8',
+    ];
+    if (cookie) args.push('-b', cookie);
+    args.push(url);
+    const { stdout } = await execFileAsync('curl', args, { maxBuffer: 10 * 1024 * 1024 });
+    if (!isCloudflareChallenge(stdout)) {
+      console.log(`[rss] ${url} → curl OK (${stdout.length} bytes)`);
+      return stdout;
+    }
+    console.log(`[rss] ${url} → curl got Cloudflare challenge, trying FlareSolverr…`);
+  } catch (err) {
+    console.log(`[rss] ${url} → curl failed: ${err.message}, trying FlareSolverr…`);
+  }
+
+  // Strategy 3: FlareSolverr (headless browser that solves CF challenges)
+  const fsResult = await fetchViaFlareSolverr(url);
+  if (fsResult) return fsResult;
+
+  throw new Error('All fetch strategies failed — Cloudflare protected. Configure FlareSolverr (Settings → RSS) or use an RSS proxy like rss.app.');
 }
 
 router.post('/fetch', async (req, res) => {
@@ -49,12 +242,16 @@ router.post('/fetch', async (req, res) => {
           console.log(`[rss-debug] ${feed.name} enclosure:`, parsed.items[0].enclosure);
           console.log(`[rss-debug] ${feed.name} guid:`, parsed.items[0].guid);
         }
-        parsed.items.slice(0, 50).forEach((item) => {
+        parsed.items.slice(0, 150).forEach((item) => {
           const cats = extractCategories(item);
           const link = item.link || item.guid || '';
           const rawDate = item.pubDate || item.isoDate || null;
           const pubDateSec = rawDate ? Math.floor(new Date(rawDate).getTime() / 1000) : null;
           const id = createHash('md5').update(`${feed.name}::${link || item.title}`).digest('hex');
+          const meta = extractMeta(item);
+          // For UNIT3D feeds, build a detail page URL from the guid (torrent ID)
+          const detailUrl = meta?._src === 'unit3d' && item.guid ? `${new URL(feed.url).origin}/torrents/${item.guid}` : null;
+          if (meta) delete meta._src;
           allItems.push({
             id,
             title: item.title || 'Untitled',
@@ -67,6 +264,7 @@ router.post('/fetch', async (req, res) => {
             torrentUrl: item.enclosure?.url || link || null,
             pubDateSec,
             sentAt: null,
+            meta: meta ? { ...meta, detailUrl } : null,
           });
         });
       } catch (err) {
@@ -79,13 +277,14 @@ router.post('/fetch', async (req, res) => {
 
     // Persist to DB
     const upsert = db.prepare(`
-      INSERT OR REPLACE INTO rss_items (id, feed_name, title, link, category, categories, snippet, torrent_url, pub_date)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO rss_items (id, feed_name, title, link, category, categories, snippet, torrent_url, pub_date, meta)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     db.transaction((items) => {
       for (const it of items) {
         upsert.run(it.id, it.source, it.title, it.link, it.category,
-          JSON.stringify(it.categories), it.snippet, it.torrentUrl, it.pubDateSec);
+          JSON.stringify(it.categories), it.snippet, it.torrentUrl, it.pubDateSec,
+          it.meta ? JSON.stringify(it.meta) : null);
       }
     })(allItems);
 
@@ -100,6 +299,49 @@ router.post('/fetch', async (req, res) => {
     allItems.forEach((it) => { if (sentMap[it.id]) it.sentAt = sentMap[it.id]; });
 
     res.json({ items: allItems, count: allItems.length, errors: feedErrors });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/rss/ingest-xml — accept pre-fetched XML from browser ───────────
+// Used when server-side fetch is blocked by Cloudflare but the browser can access the feed
+router.post('/ingest-xml', async (req, res) => {
+  try {
+    const { feedName, xml } = req.body;
+    if (!feedName || !xml) return res.status(400).json({ error: 'feedName and xml required' });
+
+    const parsed = await parser.parseString(xml);
+    const allItems = [];
+
+    parsed.items.slice(0, 100).forEach((item) => {
+      const cats = extractCategories(item);
+      const link = item.link || item.guid || '';
+      const rawDate = item.pubDate || item.isoDate || null;
+      const pubDateSec = rawDate ? Math.floor(new Date(rawDate).getTime() / 1000) : null;
+      const id = createHash('md5').update(`${feedName}::${link || item.title}`).digest('hex');
+      allItems.push({
+        id, title: item.title || 'Untitled', link, source: feedName,
+        date: formatDate(rawDate),
+        snippet: stripHtml(item.contentSnippet || item.content || item.summary || '').slice(0, 200),
+        category: cats[0] || '', categories: cats,
+        torrentUrl: item.enclosure?.url || link || null,
+        pubDateSec, sentAt: null,
+      });
+    });
+
+    const upsert = db.prepare(`
+      INSERT OR REPLACE INTO rss_items (id, feed_name, title, link, category, categories, snippet, torrent_url, pub_date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    db.transaction((items) => {
+      for (const it of items) {
+        upsert.run(it.id, it.source, it.title, it.link, it.category,
+          JSON.stringify(it.categories), it.snippet, it.torrentUrl, it.pubDateSec);
+      }
+    })(allItems);
+
+    res.json({ ingested: allItems.length, feedName });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -143,6 +385,54 @@ router.post('/send', async (req, res) => {
   }
 });
 
+// ── GET /api/rss/flaresolverr — get current FlareSolverr URL ─────────────────
+router.get('/flaresolverr', (req, res) => {
+  try {
+    const url = getFlareSolverrUrl() || '';
+    res.json({ url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PUT /api/rss/flaresolverr — save FlareSolverr URL to DB ─────────────────
+router.put('/flaresolverr', (req, res) => {
+  try {
+    const { url } = req.body;
+    if (url === undefined) return res.status(400).json({ error: 'url required' });
+    db.prepare("INSERT OR REPLACE INTO iptv_meta (key, value) VALUES ('flaresolverr_url', ?)").run(url || '');
+    res.json({ success: true, url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/rss/flaresolverr/test — test FlareSolverr connectivity ─────────
+router.post('/flaresolverr/test', async (req, res) => {
+  try {
+    const fsUrl = req.body.url || getFlareSolverrUrl();
+    if (!fsUrl) return res.status(400).json({ success: false, error: 'No FlareSolverr URL configured' });
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const r = await fetch(`${fsUrl}/v1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd: 'request.get', url: 'https://httpbin.org/get', maxTimeout: 8000 }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const data = await r.json();
+    if (data.status === 'ok') {
+      res.json({ success: true, version: data.version || 'unknown' });
+    } else {
+      res.json({ success: false, error: data.message || 'Unknown error' });
+    }
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 // ── GET /api/rss/search ───────────────────────────────────────────────────────
 router.get('/search', (req, res) => {
   try {
@@ -177,6 +467,7 @@ router.get('/search', (req, res) => {
         torrentUrl: r.torrent_url,
         pubDateSec: r.pub_date,
         sentAt: r.sent_at || null,
+        meta: r.meta ? JSON.parse(r.meta) : null,
       })),
       total,
     });

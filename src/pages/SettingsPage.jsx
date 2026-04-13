@@ -70,6 +70,102 @@ export default function SettingsPage() {
     });
   };
 
+  // ── FlareSolverr state ──────────────────────────────────────────────────────
+  const [fsUrl, setFsUrl]             = useState('');
+  const [fsLoaded, setFsLoaded]       = useState(false);
+  const [fsTesting, setFsTesting]     = useState(false);
+  const [fsTestResult, setFsTestResult] = useState(null); // 'ok' | 'fail' | null
+  const [fsSaving, setFsSaving]       = useState(false);
+
+  useEffect(() => {
+    fetch('/api/rss/flaresolverr')
+      .then((r) => r.json())
+      .then((d) => { setFsUrl(d.url || ''); setFsLoaded(true); })
+      .catch(() => setFsLoaded(true));
+  }, []);
+
+  const saveFsUrl = async () => {
+    setFsSaving(true);
+    try {
+      await fetch('/api/rss/flaresolverr', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: fsUrl.trim() }),
+      });
+      setFsTestResult(null);
+    } catch { /* ignore */ }
+    finally { setFsSaving(false); }
+  };
+
+  const testFs = async () => {
+    setFsTesting(true);
+    setFsTestResult(null);
+    try {
+      const r = await fetch('/api/rss/flaresolverr/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: fsUrl.trim() }),
+      });
+      const d = await r.json();
+      setFsTestResult(d.success ? 'ok' : 'fail');
+    } catch {
+      setFsTestResult('fail');
+    } finally { setFsTesting(false); }
+  };
+
+  // ── NordicBytes state ──────────────────────────────────────────────────────
+  const [nbUrl, setNbUrl]       = useState('https://nordicbytes.org');
+  const [nbKey, setNbKey]       = useState('');
+  const [nbHasKey, setNbHasKey] = useState(false);
+  const [nbTesting, setNbTesting] = useState(false);
+  const [nbResult, setNbResult] = useState(null); // { success, user?, error? }
+  const [nbSaving, setNbSaving] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/nordicbytes/config')
+      .then((r) => r.json())
+      .then((d) => {
+        setNbUrl(d.baseUrl || 'https://nordicbytes.org');
+        setNbHasKey(d.hasKey);
+      })
+      .catch(() => {});
+  }, []);
+
+  const saveNb = async () => {
+    setNbSaving(true);
+    try {
+      const body = { baseUrl: nbUrl.trim() };
+      if (nbKey.trim()) body.apiKey = nbKey.trim();
+      await fetch('/api/nordicbytes/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (nbKey.trim()) setNbHasKey(true);
+      setNbResult(null);
+    } catch { /* ignore */ }
+    finally { setNbSaving(false); }
+  };
+
+  const testNb = async () => {
+    setNbTesting(true);
+    setNbResult(null);
+    try {
+      const body = { baseUrl: nbUrl.trim() };
+      if (nbKey.trim()) body.apiKey = nbKey.trim();
+      const r = await fetch('/api/nordicbytes/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      setNbResult(d);
+      if (d.success) setNbHasKey(true);
+    } catch {
+      setNbResult({ success: false, error: 'Request failed' });
+    } finally { setNbTesting(false); }
+  };
+
   // ── System Logs state ───────────────────────────────────────────────────────
   const [logs, setLogs] = useState([]);
   const [logStats, setLogStats] = useState({ error: 0, warn: 0, info: 0 });
@@ -246,6 +342,97 @@ export default function SettingsPage() {
         </button>
       </section>
 
+      {/* NordicBytes */}
+      <section className="p-5 rounded-xl bg-vault-surface border border-vault-border">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-emerald-500/15 flex items-center justify-center">
+              <span className="font-display text-lg text-emerald-400">NB</span>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-vault-text">NordicBytes</h3>
+              <p className="text-[10px] text-vault-muted">Private tracker — UNIT3D API</p>
+            </div>
+          </div>
+          {nbTesting && <span className="text-[10px] text-vault-gold animate-pulse">Testing...</span>}
+          {nbResult?.success && (
+            <span className="text-[10px] text-green-400 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+              {nbResult.user?.username || 'Connected'}
+            </span>
+          )}
+          {nbResult && !nbResult.success && (
+            <span className="text-[10px] text-red-400 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-400" />Failed
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <InputField
+            label="Site URL"
+            value={nbUrl}
+            onChange={(v) => { setNbUrl(v); setNbResult(null); }}
+            placeholder="https://nordicbytes.org"
+          />
+          <div>
+            <label className="block text-[10px] uppercase tracking-widest text-vault-muted mb-1.5">API Key</label>
+            <input
+              type="password"
+              value={nbKey}
+              onChange={(e) => { setNbKey(e.target.value); setNbResult(null); }}
+              placeholder={nbHasKey ? '••••••••  (saved — leave blank to keep)' : 'Paste your API key'}
+              className="w-full px-3 py-2 rounded-lg bg-vault-bg border border-vault-border text-sm text-vault-text placeholder:text-vault-muted/40 focus:outline-none focus:border-vault-accent/50 focus:ring-1 focus:ring-vault-accent/20 transition-all"
+            />
+          </div>
+        </div>
+
+        {nbResult?.success && nbResult.user && (
+          <div className="mb-4 p-3 rounded-lg bg-vault-card border border-vault-border grid grid-cols-4 gap-3 text-center">
+            <div>
+              <p className="text-[9px] uppercase tracking-widest text-vault-muted">User</p>
+              <p className="text-xs text-vault-text font-medium mt-0.5">{nbResult.user.username}</p>
+            </div>
+            <div>
+              <p className="text-[9px] uppercase tracking-widest text-vault-muted">Uploaded</p>
+              <p className="text-xs text-green-400 font-medium mt-0.5">{nbResult.user.uploaded ? (nbResult.user.uploaded / 1073741824).toFixed(1) + ' GB' : '—'}</p>
+            </div>
+            <div>
+              <p className="text-[9px] uppercase tracking-widest text-vault-muted">Downloaded</p>
+              <p className="text-xs text-orange-400 font-medium mt-0.5">{nbResult.user.downloaded ? (nbResult.user.downloaded / 1073741824).toFixed(1) + ' GB' : '—'}</p>
+            </div>
+            <div>
+              <p className="text-[9px] uppercase tracking-widest text-vault-muted">Ratio</p>
+              <p className="text-xs text-vault-teal font-medium mt-0.5">{nbResult.user.ratio ?? '—'}</p>
+            </div>
+          </div>
+        )}
+
+        {nbResult && !nbResult.success && (
+          <p className="text-[10px] text-red-400 mb-3">{nbResult.error}</p>
+        )}
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={async () => { await saveNb(); testNb(); }}
+            disabled={nbSaving || nbTesting}
+            className="px-4 py-2 rounded-lg bg-vault-accent text-white text-xs font-medium hover:bg-vault-accentHover transition-colors disabled:opacity-40"
+          >
+            {nbSaving ? 'Saving...' : 'Save & Test'}
+          </button>
+          <button
+            onClick={testNb}
+            disabled={nbTesting || !nbHasKey}
+            className="px-4 py-2 rounded-lg bg-vault-card border border-vault-border text-vault-text text-xs font-medium hover:bg-vault-border/30 transition-colors disabled:opacity-40"
+          >
+            Test Only
+          </button>
+          <p className="text-[10px] text-vault-muted">
+            Find your API key at <span className="text-vault-teal">Profile → Settings → API Key</span>
+          </p>
+        </div>
+      </section>
+
       {/* RSS Feeds */}
       <section className="p-5 rounded-xl bg-vault-surface border border-vault-border">
         <div className="flex items-center gap-3 mb-4">
@@ -271,6 +458,55 @@ export default function SettingsPage() {
           ))}
         </div>
         <p className="text-[10px] text-vault-muted mt-3">Manage feeds from the News section.</p>
+      </section>
+
+      {/* FlareSolverr — Cloudflare bypass for RSS */}
+      <section className="p-5 rounded-xl bg-vault-surface border border-vault-border">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-lg bg-amber-500/15 flex items-center justify-center">
+            <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-vault-text">FlareSolverr</h3>
+            <p className="text-[10px] text-vault-muted">Headless browser proxy to bypass Cloudflare-protected RSS feeds</p>
+          </div>
+          {fsTestResult === 'ok' && <span className="text-[10px] text-green-400 flex items-center gap-1 ml-auto"><span className="w-1.5 h-1.5 rounded-full bg-green-400" />Connected</span>}
+          {fsTestResult === 'fail' && <span className="text-[10px] text-red-400 flex items-center gap-1 ml-auto"><span className="w-1.5 h-1.5 rounded-full bg-red-400" />Failed</span>}
+          {fsTesting && <span className="text-[10px] text-vault-gold animate-pulse ml-auto">Testing...</span>}
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-[10px] uppercase tracking-widest text-vault-muted mb-1.5">FlareSolverr URL</label>
+          <input
+            type="text"
+            value={fsUrl}
+            onChange={(e) => { setFsUrl(e.target.value); setFsTestResult(null); }}
+            placeholder="http://localhost:8191"
+            className="w-full px-3 py-2 rounded-lg bg-vault-bg border border-vault-border text-sm text-vault-text placeholder:text-vault-muted/40 focus:outline-none focus:border-vault-accent/50 focus:ring-1 focus:ring-vault-accent/20 transition-all"
+          />
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={async () => { await saveFsUrl(); testFs(); }}
+            disabled={fsSaving || fsTesting}
+            className="px-4 py-2 rounded-lg bg-vault-accent text-white text-xs font-medium hover:bg-vault-accentHover transition-colors disabled:opacity-40"
+          >
+            {fsSaving ? 'Saving...' : 'Save & Test'}
+          </button>
+          <button
+            onClick={testFs}
+            disabled={fsTesting || !fsUrl.trim()}
+            className="px-4 py-2 rounded-lg bg-vault-card border border-vault-border text-vault-text text-xs font-medium hover:bg-vault-border/30 transition-colors disabled:opacity-40"
+          >
+            Test Only
+          </button>
+          <p className="text-[10px] text-vault-muted flex-1">
+            Run via Docker: <code className="px-1.5 py-0.5 rounded bg-vault-bg text-vault-teal text-[9px]">docker run -d -p 8191:8191 ghcr.io/flaresolverr/flaresolverr</code>
+          </p>
+        </div>
       </section>
 
       {/* Channel Manager */}

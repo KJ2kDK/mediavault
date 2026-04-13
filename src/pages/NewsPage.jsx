@@ -33,7 +33,7 @@ const DEMO_NEWS = [
   { id: 'n8', title: 'ISPs Begin Implementing New Speed Tiers', source: 'Ars Technica', date: '2d ago', category: 'Internet', snippet: 'Symmetrical multi-gigabit connections are becoming available in more markets.' },
 ];
 
-export default function NewsPage() {
+export default function NewsPage({ navPayload, onClearNavPayload }) {
   const { config, addRssFeed, removeRssFeed, updateRssFeed } = useConfig();
   const [news, setNews]                     = useState(DEMO_NEWS);
   const [loading, setLoading]               = useState(false);
@@ -100,10 +100,24 @@ export default function NewsPage() {
 
   const sources = ['All', ...config.rssFeeds.map((f) => f.name)];
 
-  // Auto-fetch whenever the feeds list changes (including on mount)
+  // Handle navigation payload from chat assistant
+  useEffect(() => {
+    if (navPayload?.search) {
+      setSearchQuery(navPayload.search);
+      doSearch(navPayload.search);
+      onClearNavPayload?.();
+    }
+  }, [navPayload]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // On mount: load cached items from DB instantly, then background-refresh RSS feeds
   useEffect(() => {
     const enabled = config.rssFeeds.filter((f) => f.enabled);
-    if (enabled.length > 0) fetchFeeds();
+    if (enabled.length === 0) return;
+    // 1. Instant load from DB
+    loadFromDb().then((hadItems) => {
+      // 2. Background refresh from RSS (no loading spinner)
+      backgroundRefreshFeeds();
+    });
   }, [config.rssFeeds.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refresh on interval
@@ -280,8 +294,113 @@ export default function NewsPage() {
     });
   }, [news, activeSource, categoryFilters]);
 
-  const fetchFeeds = async () => {
-    setLoading(true);
+  // Browser-proxy fetch: opens feed URL in a popup, fetches XML via same-origin,
+  // and POSTs it to the server's ingest endpoint. Bypasses Cloudflare because the
+  // browser has solved the JS challenge and carries the cf_clearance cookie.
+  const browserFetchFeed = async (feed) => {
+    return new Promise((resolve) => {
+      const popup = window.open(feed.url, '_blank', 'width=1,height=1,left=-9999,top=-9999');
+      if (!popup) { resolve(null); return; }
+      const timer = setTimeout(() => { try { popup.close(); } catch {} resolve(null); }, 20000);
+      const check = setInterval(async () => {
+        try {
+          // Wait for the page to load and try same-origin fetch from within the popup
+          if (popup.closed) { clearInterval(check); clearTimeout(timer); resolve(null); return; }
+          // Try fetching from the popup's context (same-origin = cookies included)
+          const xml = await new Promise((res, rej) => {
+            try {
+              const script = popup.document.createElement('script');
+              script.textContent = `
+                fetch(location.href, { credentials: 'include' })
+                  .then(r => r.text())
+                  .then(t => { window.__rssXml = t; })
+                  .catch(() => { window.__rssXml = null; });
+              `;
+              popup.document.head.appendChild(script);
+              setTimeout(() => res(popup.__rssXml), 3000);
+            } catch { rej(); }
+          });
+          if (xml && xml.includes('<rss') && !xml.includes('Just a moment')) {
+            clearInterval(check);
+            clearTimeout(timer);
+            popup.close();
+            // POST to ingest endpoint
+            const resp = await fetch('/api/rss-ingest/ingest-xml', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ feedName: feed.name, xml }),
+            });
+            const data = await resp.json();
+            // Reload from DB
+            const search = await fetch(`/api/rss/search?source=${encodeURIComponent(feed.name)}&limit=100`);
+            const searchData = await search.json();
+            resolve(searchData.items || []);
+          }
+        } catch {
+          // Cross-origin — can't access popup content yet, keep waiting
+        }
+      }, 2000);
+    });
+  };
+
+  // ── Shared helper: apply items array to state ──────────────────────────────
+  const applyItems = (items, merge = false) => {
+    if (!items?.length) return;
+    const catMap = {};
+    for (const item of items) {
+      const cats = item.categories?.length ? item.categories : [item.category || 'Uncategorized'];
+      if (!catMap[item.source]) catMap[item.source] = new Set();
+      for (const cat of cats) catMap[item.source].add(cat);
+    }
+    setFeedCategories((prev) => {
+      const next = { ...prev };
+      for (const [src, catSet] of Object.entries(catMap)) {
+        next[src] = [...catSet].sort();
+      }
+      return next;
+    });
+    setCategoryFilters((prev) => {
+      const next = { ...prev };
+      for (const [src, catSet] of Object.entries(catMap)) {
+        if (!next[src]) next[src] = {};
+        for (const cat of catSet) {
+          if (!(cat in next[src])) next[src][cat] = true;
+        }
+      }
+      return next;
+    });
+    if (merge) {
+      setNews((prev) => {
+        const existing = new Set(prev.map((i) => i.id));
+        const merged = [...prev];
+        for (const it of items) if (!existing.has(it.id)) merged.push(it);
+        merged.sort((a, b) => (b.pubDateSec || 0) - (a.pubDateSec || 0));
+        return merged;
+      });
+    } else {
+      setNews(items);
+    }
+    const sent = {};
+    for (const it of items) if (it.sentAt) sent[it.id] = true;
+    setSentIds((prev) => ({ ...prev, ...sent }));
+  };
+
+  // ── Load cached items from DB (instant) ───────────────────────────────────
+  const loadFromDb = async () => {
+    try {
+      const res = await fetch(`/api/rss/search?limit=500`);
+      const data = await res.json();
+      if (data.items?.length > 0) {
+        applyItems(data.items);
+        setLoading(false);
+        return true;
+      }
+    } catch {}
+    return false;
+  };
+
+  // ── Background refresh: fetch RSS feeds silently, merge new items ─────────
+  const backgroundRefreshFeeds = async () => {
     try {
       const res = await fetch('/api/rss/fetch', {
         method: 'POST',
@@ -289,49 +408,41 @@ export default function NewsPage() {
         body: JSON.stringify({ feeds: config.rssFeeds.filter((f) => f.enabled) }),
       });
       const data = await res.json();
-      // Store per-feed errors
       if (data.errors?.length) {
         const errMap = {};
-        for (const e of data.errors) errMap[e.name] = e.error;
+        const cfBlocked = [];
+        for (const e of data.errors) {
+          errMap[e.name] = e.error;
+          if (e.error?.includes('Cloudflare')) {
+            const feed = config.rssFeeds.find((f) => f.name === e.name);
+            if (feed) cfBlocked.push(feed);
+          }
+        }
         setFeedErrors(errMap);
+        if (cfBlocked.length) {
+          for (const feed of cfBlocked) {
+            browserFetchFeed(feed).then((items) => {
+              if (items?.length) {
+                setFeedErrors((prev) => { const next = { ...prev }; delete next[feed.name]; return next; });
+                applyItems(items, true);
+              }
+            }).catch(() => {});
+          }
+        }
       } else {
         setFeedErrors({});
       }
-
       if (data.items?.length > 0) {
-        // Extract unique categories per feed (use all categories array from server)
-        const catMap = {};
-        for (const item of data.items) {
-          const cats = item.categories?.length ? item.categories : [item.category || 'Uncategorized'];
-          if (!catMap[item.source]) catMap[item.source] = new Set();
-          for (const cat of cats) catMap[item.source].add(cat);
-        }
-        setFeedCategories((prev) => {
-          const next = { ...prev };
-          for (const [src, catSet] of Object.entries(catMap)) {
-            next[src] = [...catSet].sort();
-          }
-          return next;
-        });
-        // Enable new categories by default
-        setCategoryFilters((prev) => {
-          const next = { ...prev };
-          for (const [src, catSet] of Object.entries(catMap)) {
-            if (!next[src]) next[src] = {};
-            for (const cat of catSet) {
-              if (!(cat in next[src])) next[src][cat] = true;
-            }
-          }
-          return next;
-        });
-        setNews(data.items);
-        // Restore sent markers from server response
-        const sent = {};
-        for (const it of data.items) if (it.sentAt) sent[it.id] = true;
-        setSentIds((prev) => ({ ...prev, ...sent }));
+        applyItems(data.items, true);
       }
-    } catch {
-      // Keep demo data on failure
+    } catch {}
+  };
+
+  // ── Full fetch (used by manual Refresh button) ────────────────────────────
+  const fetchFeeds = async () => {
+    setLoading(true);
+    try {
+      await backgroundRefreshFeeds();
     } finally {
       setLoading(false);
     }
@@ -604,19 +715,73 @@ export default function NewsPage() {
                         )}
                       </div>
                       <h3 className="text-sm font-medium text-vault-text leading-snug">{article.title}</h3>
-                      {article.snippet && (
+                      {/* UNIT3D torrent metadata badges */}
+                      {article.meta && (
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                          {article.meta.resolution && (
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400">{article.meta.resolution}</span>
+                          )}
+                          {article.meta.type && (
+                            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400">{article.meta.type}</span>
+                          )}
+                          {article.meta.size && (
+                            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-vault-accent/15 text-vault-accent">{article.meta.size}</span>
+                          )}
+                          {(article.meta.seeders !== undefined || article.meta.leechers !== undefined) && (
+                            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-vault-surface flex items-center gap-1">
+                              <span className="text-green-400">▲{article.meta.seeders ?? 0}</span>
+                              <span className="text-vault-muted">/</span>
+                              <span className="text-red-400">▼{article.meta.leechers ?? 0}</span>
+                            </span>
+                          )}
+                          {article.meta.completed > 0 && (
+                            <span className="text-[10px] text-vault-muted px-1.5 py-0.5 rounded bg-vault-surface">✓{article.meta.completed}</span>
+                          )}
+                        </div>
+                      )}
+                      {article.snippet && !article.meta && (
                         <p className="text-xs text-vault-muted mt-1 line-clamp-2">{article.snippet}</p>
                       )}
-                      {selectedArticle?.id === article.id && article.link && (
-                        <a
-                          href={article.link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-block mt-2 text-[10px] text-vault-teal hover:underline"
-                        >
-                          Open article →
-                        </a>
+                      {/* Expanded detail area for selected article */}
+                      {selectedArticle?.id === article.id && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          {article.meta?.imdbId && (
+                            <a
+                              href={`https://www.imdb.com/title/${article.meta.imdbId}/`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-500 hover:bg-yellow-500/25 transition-colors"
+                            >
+                              IMDb
+                            </a>
+                          )}
+                          {article.meta?.tmdbId && (
+                            <a
+                              href={`https://www.themoviedb.org/movie/${article.meta.tmdbId}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-400 hover:bg-sky-500/25 transition-colors"
+                            >
+                              TMDB
+                            </a>
+                          )}
+                          {article.meta?.uploader && (
+                            <span className="text-[10px] text-vault-muted">by {article.meta.uploader}</span>
+                          )}
+                          {article.link && (
+                            <a
+                              href={article.link}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-[10px] text-vault-teal hover:underline"
+                            >
+                              Open article →
+                            </a>
+                          )}
+                        </div>
                       )}
                     </div>
                     {article.torrentUrl && (

@@ -131,14 +131,30 @@ router.post('/epg-match', (req, res) => {
       if (!epgMap[prefix]) epgMap[prefix] = id;
     }
 
-    // Match unmatched channels
-    const unmatched = db.prepare("SELECT id, name FROM iptv_channels WHERE epg_id IS NULL OR epg_id = ''").all();
+    // Build set of valid EPG channel_ids for fast lookup
+    const validEpgIdSet = new Set(epgIds);
+
+    // Match channels that either have no epg_id OR have one that doesn't exist in actual EPG data
+    // (provider-supplied epg_channel_id often doesn't match the XMLTV channel_id format)
+    const candidates = db.prepare("SELECT id, name, epg_id FROM iptv_channels").all()
+      .filter(r => !r.epg_id || !validEpgIdSet.has(r.epg_id));
     const update = db.prepare("UPDATE iptv_channels SET epg_id = ? WHERE id = ?");
 
     let matched = 0;
+    let rematched = 0;
     const matchLog = [];
 
-    for (const ch of unmatched) {
+    for (const ch of candidates) {
+      // If provider gave an epg_id, try case-insensitive / normalised lookup first
+      if (ch.epg_id) {
+        const normProvided = normId(ch.epg_id);
+        if (epgMap[normProvided]) {
+          update.run(epgMap[normProvided], ch.id);
+          rematched++;
+          if (matchLog.length < 30) matchLog.push({ channel: ch.name, epg_id: epgMap[normProvided], was: ch.epg_id });
+          continue;
+        }
+      }
       // Skip separator / placeholder channels
       if (/[✶⋆★•·►▶◄◀]/u.test(ch.name)) continue;
       const norm = normalise(ch.name);
@@ -147,8 +163,20 @@ router.post('/epg-match', (req, res) => {
       // Try exact match, then progressively shorter prefixes
       let found = epgMap[norm] ?? null;
 
-      // Try appending common TLDs if no direct match
-      const tlds = ['dk', 'se', 'no', 'fi', 'uk', 'us', 'de', 'nl', 'fr', 'es', 'it', 'ca', 'au'];
+      // Try appending TLDs — prioritise the country detected from channel name prefix
+      const PREFIX_TO_TLD = {
+        DNK:'dk', DK:'dk', SWE:'se', SE:'se', NOR:'no', NO:'no', FIN:'fi', FI:'fi',
+        UK:'uk', GB:'uk', US:'us', USA:'us', DE:'de', NL:'nl', FR:'fr', ES:'es',
+        IT:'it', CA:'ca', CAN:'ca', AU:'au', PT:'pt', PL:'pl', RO:'ro', HU:'hu',
+        AT:'at', CH:'ch', BE:'be', IE:'ie', CZ:'cz', SK:'sk', HR:'hr', RS:'rs',
+        BG:'bg', GR:'gr', TR:'tr', RU:'ru', IN:'in', JP:'jp', KR:'kr', BR:'br',
+        MX:'mx', AR:'ar', CL:'cl', CO:'co', IL:'il', ZA:'za',
+      };
+      const prefixMatch = ch.name.match(/^([A-Z]{2,3})\|/i);
+      const detectedTld = prefixMatch ? PREFIX_TO_TLD[prefixMatch[1].toUpperCase()] : null;
+      const tlds = detectedTld
+        ? [detectedTld, ...['dk','se','no','fi','uk','us','de','nl','fr','es','it','ca','au'].filter(t => t !== detectedTld)]
+        : ['dk', 'se', 'no', 'fi', 'uk', 'us', 'de', 'nl', 'fr', 'es', 'it', 'ca', 'au'];
       if (!found) {
         for (const tld of tlds) {
           const candidate = norm + tld;  // "bbcearth" + "dk" = "bbcearthdk"
@@ -177,8 +205,8 @@ router.post('/epg-match', (req, res) => {
       }
     }
 
-    dbLog('info', 'iptv/epg-match', `Auto-matched ${matched} channels from ${unmatched.length} unmatched`);
-    res.json({ matched, total_unmatched: unmatched.length, examples: matchLog });
+    dbLog('info', 'iptv/epg-match', `Auto-matched ${matched} new + ${rematched} re-matched from ${candidates.length} candidates`);
+    res.json({ matched, rematched, total_candidates: candidates.length, examples: matchLog });
   } catch (err) {
     dbLog('error', 'iptv/epg-match', err.message, { stack: err.stack });
     res.status(500).json({ error: err.message });
@@ -275,6 +303,22 @@ router.post('/xtream/vod/categories', async (req, res) => {
       id: String(c.category_id),
       name: c.category_name || 'Uncategorized',
     }));
+
+    // Extract country from category name and store in DB
+    const countryRegex = /^\[([A-Z]{2,3})\]\s*|^\|([A-Z]{2,3})\|\s*|^([A-Z]{2,3})\s*[:|\-]\s*/i;
+    const insertCat = db.prepare(`
+      INSERT OR REPLACE INTO vod_categories (id, name, country, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+    `);
+    const tx = db.transaction(() => {
+      for (const cat of cats) {
+        const m = cat.name.match(countryRegex);
+        const country = m ? (m[1] || m[2] || m[3]) : null;
+        insertCat.run(cat.id, cat.name, country);
+      }
+    });
+    tx();
+
     res.json({ categories: cats, count: cats.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -304,6 +348,18 @@ router.post('/xtream/vod', async (req, res) => {
       url: `${cleanBase}/movie/${user}/${pass}/${v.stream_id}.mkv`,
     }));
 
+    // Store items in DB
+    const insertItem = db.prepare(`
+      INSERT OR REPLACE INTO vod_items (id, title, type, year, rating, genre, category_id, thumb, url, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `);
+    const tx = db.transaction(() => {
+      for (const item of items) {
+        insertItem.run(item.id, item.title, item.type, item.year, item.rating, item.genre, item.category_id, item.thumb, item.url);
+      }
+    });
+    tx();
+
     res.json({ items, count: items.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -321,6 +377,22 @@ router.post('/xtream/series/categories', async (req, res) => {
       id: String(c.category_id),
       name: c.category_name || 'Uncategorized',
     }));
+
+    // Extract country from category name and store in DB
+    const countryRegex = /^\[([A-Z]{2,3})\]\s*|^\|([A-Z]{2,3})\|\s*|^([A-Z]{2,3})\s*[:|\-]\s*/i;
+    const insertCat = db.prepare(`
+      INSERT OR REPLACE INTO series_categories (id, name, country, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+    `);
+    const tx = db.transaction(() => {
+      for (const cat of cats) {
+        const m = cat.name.match(countryRegex);
+        const country = m ? (m[1] || m[2] || m[3]) : null;
+        insertCat.run(cat.id, cat.name, country);
+      }
+    });
+    tx();
+
     res.json({ categories: cats, count: cats.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -349,20 +421,51 @@ router.post('/xtream/series', async (req, res) => {
       thumb: s.cover || null,
     }));
 
+    // Store items in DB
+    const insertItem = db.prepare(`
+      INSERT OR REPLACE INTO series_items (id, title, type, year, rating, genre, category_id, thumb, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `);
+    const tx = db.transaction(() => {
+      for (const item of items) {
+        insertItem.run(item.id, item.title, item.type, item.year, item.rating, item.genre, item.category_id, item.thumb);
+      }
+    });
+    tx();
+
     res.json({ items, count: items.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// Fetch with retry — handles transient DNS failures from CDN wildcard subdomains
+async function fetchWithRetry(url, opts = {}, retries = 3, delay = 500) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await fetch(url, opts);
+    } catch (err) {
+      const isDns = err.message?.includes('ENOTFOUND') || err.message?.includes('EAI_AGAIN');
+      if (isDns && attempt < retries) {
+        console.log(`[proxy] DNS retry ${attempt}/${retries} for ${url.slice(0, 80)}...`);
+        await new Promise((r) => setTimeout(r, delay * attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 // Stream proxy — fetches manifests/segments server-side to bypass browser CORS restrictions
 // Uses arrayBuffer() for node-fetch v3 compatibility (v3 uses Web Streams, not Node streams)
 router.get('/proxy', async (req, res) => {
-  const { url } = req.query;
+  const { url, token } = req.query;
   if (!url) return res.status(400).end('url required');
+  // Carry the JWT token through to rewritten segment URLs so HLS.js stays authenticated
+  const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
 
   try {
-    const upstream = await fetch(url, {
+    const upstream = await fetchWithRetry(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 VLC/3.0' },
     });
 
@@ -390,7 +493,7 @@ router.get('/proxy', async (req, res) => {
           if (!trimmed || trimmed.startsWith('#')) return line;
           try {
             const absUrl = new URL(trimmed, finalUrl).toString();
-            return `/api/iptv/proxy?url=${encodeURIComponent(absUrl)}`;
+            return `/api/iptv/proxy?url=${encodeURIComponent(absUrl)}${tokenParam}`;
           } catch {
             return line;
           }
@@ -443,6 +546,196 @@ function parseM3U(text) {
   }
   return channels;
 }
+
+// ── GET /api/iptv/xtream/vod/categories/cached — serve VOD categories from DB ────
+router.get('/xtream/vod/categories/cached', (req, res) => {
+  try {
+    const rows = db.prepare('SELECT id, name FROM vod_categories ORDER BY name').all();
+    const categories = rows.map(r => ({ id: r.id, name: r.name }));
+    res.json({ categories, count: categories.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/iptv/xtream/vod/cached — serve VOD items from DB for a category ───
+router.get('/xtream/vod/cached', (req, res) => {
+  try {
+    const { category_id } = req.query;
+    let query = 'SELECT id, title, type, year, rating, genre, category_id, thumb, url FROM vod_items';
+    if (category_id) {
+      query += ` WHERE category_id = ?`;
+      const rows = db.prepare(query).all(category_id);
+      res.json({ items: rows, count: rows.length });
+    } else {
+      const rows = db.prepare(query).all();
+      res.json({ items: rows, count: rows.length });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/iptv/xtream/series/categories/cached — serve Series categories from DB ──
+router.get('/xtream/series/categories/cached', (req, res) => {
+  try {
+    const rows = db.prepare('SELECT id, name FROM series_categories ORDER BY name').all();
+    const categories = rows.map(r => ({ id: r.id, name: r.name }));
+    res.json({ categories, count: categories.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/iptv/xtream/series/cached — serve Series items from DB for a category ──
+router.get('/xtream/series/cached', (req, res) => {
+  try {
+    const { category_id } = req.query;
+    let query = 'SELECT id, title, type, year, rating, genre, category_id, thumb FROM series_items';
+    if (category_id) {
+      query += ` WHERE category_id = ?`;
+      const rows = db.prepare(query).all(category_id);
+      res.json({ items: rows, count: rows.length });
+    } else {
+      const rows = db.prepare(query).all();
+      res.json({ items: rows, count: rows.length });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/iptv/vod-series/sync — background sync for VOD and Series ─────────
+router.post('/vod-series/sync', async (req, res) => {
+  try {
+    const { base, user, pass } = req.body;
+    if (!base || !user || !pass) {
+      return res.status(400).json({ error: 'All credentials required' });
+    }
+    const cleanBase = base.replace(/\/$/, '');
+
+    // Fetch VOD categories and items
+    const vodCatRes = await fetch(`${cleanBase}/player_api.php?username=${user}&password=${pass}&action=get_vod_categories`);
+    const vodCats = await vodCatRes.json();
+    const vodCategories = (Array.isArray(vodCats) ? vodCats : []).map(c => ({
+      id: String(c.category_id),
+      name: c.category_name || 'Uncategorized',
+    }));
+
+    // Fetch VOD items for each category
+    const countryRegex = /^\[([A-Z]{2,3})\]\s*|^\|([A-Z]{2,3})\|\s*|^([A-Z]{2,3})\s*[:|\-]\s*/i;
+    const allVodItems = [];
+    const insertVodCat = db.prepare(`
+      INSERT OR REPLACE INTO vod_categories (id, name, country, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+    `);
+    const insertVodItem = db.prepare(`
+      INSERT OR REPLACE INTO vod_items (id, title, type, year, rating, genre, category_id, thumb, url, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `);
+
+    const vodTx = db.transaction(() => {
+      for (const cat of vodCategories) {
+        const m = cat.name.match(countryRegex);
+        const country = m ? (m[1] || m[2] || m[3]) : null;
+        insertVodCat.run(cat.id, cat.name, country);
+      }
+    });
+    vodTx();
+
+    for (const cat of vodCategories) {
+      try {
+        const itemRes = await fetch(`${cleanBase}/player_api.php?username=${user}&password=${pass}&action=get_vod_streams&category_id=${encodeURIComponent(cat.id)}`);
+        const itemData = await itemRes.json();
+        const items = (Array.isArray(itemData) ? itemData : []).map((v, i) => ({
+          id: `vod_${v.stream_id || i}`,
+          title: v.name || 'Unknown',
+          type: 'movie',
+          year: v.year || null,
+          rating: v.rating_5based ? String(Math.round(v.rating_5based * 2 * 10) / 10) : (v.rating || null),
+          genre: v.genre || '',
+          category_id: String(v.category_id || cat.id),
+          thumb: v.stream_icon || null,
+          url: `${cleanBase}/movie/${user}/${pass}/${v.stream_id}.mkv`,
+        }));
+        allVodItems.push(...items);
+
+        const vodItemTx = db.transaction(() => {
+          for (const item of items) {
+            insertVodItem.run(item.id, item.title, item.type, item.year, item.rating, item.genre, item.category_id, item.thumb, item.url);
+          }
+        });
+        vodItemTx();
+      } catch (e) {
+        console.error(`Failed to fetch VOD items for category ${cat.id}:`, e.message);
+      }
+    }
+
+    // Fetch Series categories and items
+    const seriesCatRes = await fetch(`${cleanBase}/player_api.php?username=${user}&password=${pass}&action=get_series_categories`);
+    const seriesCats = await seriesCatRes.json();
+    const seriesCategories = (Array.isArray(seriesCats) ? seriesCats : []).map(c => ({
+      id: String(c.category_id),
+      name: c.category_name || 'Uncategorized',
+    }));
+
+    const allSeriesItems = [];
+    const insertSeriesCat = db.prepare(`
+      INSERT OR REPLACE INTO series_categories (id, name, country, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+    `);
+    const insertSeriesItem = db.prepare(`
+      INSERT OR REPLACE INTO series_items (id, title, type, year, rating, genre, category_id, thumb, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `);
+
+    const seriesTx = db.transaction(() => {
+      for (const cat of seriesCategories) {
+        const m = cat.name.match(countryRegex);
+        const country = m ? (m[1] || m[2] || m[3]) : null;
+        insertSeriesCat.run(cat.id, cat.name, country);
+      }
+    });
+    seriesTx();
+
+    for (const cat of seriesCategories) {
+      try {
+        const itemRes = await fetch(`${cleanBase}/player_api.php?username=${user}&password=${pass}&action=get_series&category_id=${encodeURIComponent(cat.id)}`);
+        const itemData = await itemRes.json();
+        const items = (Array.isArray(itemData) ? itemData : []).map((s, i) => ({
+          id: `series_${s.series_id || i}`,
+          title: s.name || 'Unknown',
+          type: 'show',
+          year: s.year || null,
+          rating: s.rating || null,
+          genre: s.genre || '',
+          category_id: String(s.category_id || cat.id),
+          thumb: s.cover || null,
+        }));
+        allSeriesItems.push(...items);
+
+        const seriesItemTx = db.transaction(() => {
+          for (const item of items) {
+            insertSeriesItem.run(item.id, item.title, item.type, item.year, item.rating, item.genre, item.category_id, item.thumb);
+          }
+        });
+        seriesItemTx();
+      } catch (e) {
+        console.error(`Failed to fetch Series items for category ${cat.id}:`, e.message);
+      }
+    }
+
+    res.json({
+      vodCategories: vodCategories.length,
+      vodItems: allVodItems.length,
+      seriesCategories: seriesCategories.length,
+      seriesItems: allSeriesItems.length,
+    });
+  } catch (err) {
+    dbLog('error', 'iptv/vod-series-sync', err.message, { stack: err.stack });
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Named export for server-level scheduled sync ──────────────────────────────
 export function scheduledIptvSync() {

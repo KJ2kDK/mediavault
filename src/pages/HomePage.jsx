@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import HeroBanner from '../components/common/HeroBanner';
 import CarouselRow from '../components/common/CarouselRow';
+import PlexPlayer from '../components/common/PlexPlayer';
 import { usePlexLibrary } from '../hooks/usePlex';
 import { useBookmarks } from '../hooks/useBookmarks';
 
@@ -85,9 +87,103 @@ function BookmarkedChannels({ onNavigate }) {
   );
 }
 
+function BookmarkedVod({ onNavigate }) {
+  const { bookmarks } = useBookmarks('vod');
+  if (bookmarks.length === 0) return null;
+
+  return (
+    <div className="mb-8">
+      <div className="flex items-center gap-3 px-6 mb-3">
+        <h3 className="font-display text-xl tracking-wide text-white">My Movies</h3>
+        <span className="text-[10px] text-vault-teal bg-vault-teal/15 px-2 py-0.5 rounded-full font-medium">
+          {bookmarks.length} bookmarked
+        </span>
+      </div>
+      <div className="flex gap-3 px-6 overflow-x-auto carousel-row pb-2">
+        {bookmarks.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => onNavigate('livetv-vod', item)}
+            className="shrink-0 w-36 flex flex-col items-center gap-2 rounded-xl bg-vault-surface border border-vault-border hover:border-vault-teal/50 hover:bg-vault-card transition-all group overflow-hidden"
+          >
+            <div className="w-full h-48 bg-vault-card overflow-hidden">
+              {item.thumb ? (
+                <img src={item.thumb} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <svg className="w-10 h-10 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
+                  </svg>
+                </div>
+              )}
+            </div>
+            <div className="text-center min-w-0 w-full px-2 pb-2">
+              <p className="text-xs font-medium text-vault-text truncate">{item.title}</p>
+              <p className="text-[10px] text-vault-muted">{[item.year, item.rating && `★ ${item.rating}`].filter(Boolean).join(' · ')}</p>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BookmarkedSeries({ onNavigate }) {
+  const { bookmarks } = useBookmarks('series');
+  if (bookmarks.length === 0) return null;
+
+  return (
+    <div className="mb-8">
+      <div className="flex items-center gap-3 px-6 mb-3">
+        <h3 className="font-display text-xl tracking-wide text-white">My Series</h3>
+        <span className="text-[10px] text-purple-400 bg-purple-400/15 px-2 py-0.5 rounded-full font-medium">
+          {bookmarks.length} bookmarked
+        </span>
+      </div>
+      <div className="flex gap-3 px-6 overflow-x-auto carousel-row pb-2">
+        {bookmarks.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => onNavigate('livetv-series', item)}
+            className="shrink-0 w-36 flex flex-col items-center gap-2 rounded-xl bg-vault-surface border border-vault-border hover:border-purple-400/50 hover:bg-vault-card transition-all group overflow-hidden"
+          >
+            <div className="w-full h-48 bg-vault-card overflow-hidden">
+              {item.thumb ? (
+                <img src={item.thumb} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <svg className="w-10 h-10 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
+                  </svg>
+                </div>
+              )}
+            </div>
+            <div className="text-center min-w-0 w-full px-2 pb-2">
+              <p className="text-xs font-medium text-vault-text truncate">{item.title}</p>
+              <p className="text-[10px] text-vault-muted">{[item.year, item.rating && `★ ${item.rating}`].filter(Boolean).join(' · ')}</p>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function HomePage({ searchQuery, onNavigate }) {
-  const { library, connected } = usePlexLibrary();
+  const { library, connected, loading, refreshLibrary } = usePlexLibrary();
+  const [refreshing, setRefreshing] = useState(false);
+  const [playingItem, setPlayingItem] = useState(null);
   const rows = connected && library ? library : DEMO_ROWS;
+
+  const handlePlay = (item) => {
+    if (item.serverUrl) setPlayingItem(item);
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try { await refreshLibrary(); } catch {}
+    setRefreshing(false);
+  };
 
   return (
     <div className="animate-fade-in">
@@ -102,11 +198,32 @@ export default function HomePage({ searchQuery, onNavigate }) {
         </div>
       )}
 
+      {connected && (
+        <div className="flex items-center justify-end px-6 mb-2">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 text-[11px] text-vault-muted hover:text-vault-teal transition-colors disabled:opacity-50"
+          >
+            <svg className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            {refreshing ? 'Scanning libraries...' : 'Refresh Plex Libraries'}
+          </button>
+        </div>
+      )}
+
       <BookmarkedChannels onNavigate={onNavigate} />
+      <BookmarkedVod onNavigate={onNavigate} />
+      <BookmarkedSeries onNavigate={onNavigate} />
 
       {Object.entries(rows).map(([title, items]) => (
-        <CarouselRow key={title} title={title} items={items} />
+        <CarouselRow key={title} title={title} items={items} onPlay={handlePlay} />
       ))}
+
+      {playingItem && (
+        <PlexPlayer item={playingItem} onClose={() => setPlayingItem(null)} />
+      )}
     </div>
   );
 }

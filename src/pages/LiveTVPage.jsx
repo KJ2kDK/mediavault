@@ -621,22 +621,15 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
     }
   }, [channels]);
 
-  // Play an Xtream VOD — goes through /api/iptv/vod-remux which spawns ffmpeg
-  // to repackage the .mkv into browser-friendly fMP4 (video copy, audio→AAC).
+  // Active VOD playback — uses a separate overlay modal so it doesn't
+  // hijack the Live TV layout and doesn't conflict with the HLS videoRef.
+  const [playingVod, setPlayingVod] = useState(null);
   const playVod = useCallback((vod) => {
     if (!vod?.url) return;
-    setActiveTab('live'); // reuse the existing player surface
-    setActiveChannel({ id: vod.id, name: vod.title || vod.name, logo: vod.thumb, url: vod.url, group: 'VOD' });
-    setPlayerStatus('loading');
-    const video = videoRef.current;
-    if (!video) { setPlayerStatus('error'); return; }
-    hlsRef.current?.destroy();
-    hlsRef.current = null;
-    const authToken = localStorage.getItem('mediavault_token') || '';
-    video.src = `/api/iptv/vod-remux?url=${encodeURIComponent(vod.url)}&token=${encodeURIComponent(authToken)}`;
-    video.oncanplay = () => setPlayerStatus('playing');
-    video.onerror = () => setPlayerStatus('error');
-    video.play().catch(() => {});
+    // Switch to VOD tab so when the user closes the movie they're back in
+    // movie land, not on a random channel list.
+    setActiveTab('vod');
+    setPlayingVod(vod);
   }, []);
 
   // Must come after playChannel to avoid temporal dead zone
@@ -1608,6 +1601,44 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
           onClose={() => setShowEpgGrid(false)}
         />
       )}
+
+      {/* ── VOD playback overlay ────────────────────────────────────────── */}
+      {playingVod && <VodOverlay vod={playingVod} onClose={() => setPlayingVod(null)} />}
+    </div>
+  );
+}
+
+// Fullscreen-ish modal that plays an Xtream VOD via the ffmpeg remux endpoint.
+// Separate from LiveTV's videoRef so the HLS player isn't disturbed.
+function VodOverlay({ vod, onClose }) {
+  const videoRef = useRef(null);
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const token = localStorage.getItem('mediavault_token') || '';
+    v.src = `/api/iptv/vod-remux?url=${encodeURIComponent(vod.url)}&token=${encodeURIComponent(token)}`;
+    v.play().catch(() => {});
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [vod.url, onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[200] bg-black/95 flex flex-col">
+      <div className="flex items-center justify-between px-5 py-3 bg-black/40">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-white truncate">{vod.title || vod.name}</h2>
+          {vod.year && <p className="text-[11px] text-vault-muted mt-0.5">{vod.year}{vod.rating ? ` • ★ ${vod.rating}` : ''}</p>}
+        </div>
+        <button onClick={onClose} className="p-2 rounded-lg text-vault-muted hover:text-white hover:bg-white/10">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 flex items-center justify-center bg-black">
+        <video ref={videoRef} className="max-w-full max-h-full" controls autoPlay />
+      </div>
     </div>
   );
 }

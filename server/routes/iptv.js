@@ -457,22 +457,25 @@ import { Agent, fetch as undiciFetch } from 'undici';
 const dnsCache = new Map(); // hostname → { ip, expires }
 const DNS_TTL = 60_000;
 
-function resolveLookup(hostname, _opts, cb) {
+// undici v6 calls lookup with {all: true}, expecting cb(err, [{address, family}, ...])
+function resolveLookup(hostname, opts, cb) {
   const cached = dnsCache.get(hostname);
-  if (cached && cached.expires > Date.now()) return cb(null, cached.ip, 4);
+  if (cached && cached.expires > Date.now()) {
+    return cb(null, [{ address: cached.ip, family: 4 }]);
+  }
 
   // Try fast libc lookup first
-  dnsModule.lookup(hostname, { family: 4 }, (err, address) => {
-    if (!err && address) {
-      dnsCache.set(hostname, { ip: address, expires: Date.now() + DNS_TTL });
-      return cb(null, address, 4);
+  dnsModule.lookup(hostname, { family: 4, all: true }, (err, addresses) => {
+    if (!err && addresses?.length) {
+      dnsCache.set(hostname, { ip: addresses[0].address, expires: Date.now() + DNS_TTL });
+      return cb(null, addresses);
     }
-    // Fallback to pure resolve4 (works for broken-SOA hosts)
+    // Fallback to pure resolve4 (works for broken-SOA CDN hosts)
     dns.resolve4(hostname).then((addrs) => {
       if (!addrs.length) return cb(new Error(`No A record for ${hostname}`));
       dnsCache.set(hostname, { ip: addrs[0], expires: Date.now() + DNS_TTL });
       console.log(`[proxy] DNS fallback: ${hostname} → ${addrs[0]}`);
-      cb(null, addrs[0], 4);
+      cb(null, addrs.map((a) => ({ address: a, family: 4 })));
     }).catch(cb);
   });
 }

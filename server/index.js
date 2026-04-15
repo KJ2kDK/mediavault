@@ -53,6 +53,7 @@ app.use('/api', requireAuth);
 // ── Protected API routes ─────────────────────────────────────────────────────
 app.use('/api/plex', plexRoutes);
 app.use('/api/qbit', qbitRoutes);
+app.use('/api/qbittorrent', qbitRoutes); // alias — frontend uses this path
 app.use('/api/iptv', iptvRoutes);
 app.use('/api/rss', rssRoutes);
 app.use('/api/library', libraryRoutes);

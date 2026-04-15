@@ -442,22 +442,46 @@ router.post('/xtream/series', async (req, res) => {
 });
 
 // Fetch with retry — handles transient DNS failures from CDN wildcard subdomains
-// dns.lookup (used by fetch internally) is strict and fails on hosts with
-// broken DNSSEC/SOA — common in IPTV CDNs like cdn77-e6f7e5.zaypool.win.
-// dns.resolve4 uses Node's pure resolver and accepts those answers.
-// On ENOTFOUND we manually resolve and retry with the IP + Host header.
-import { promises as dns } from 'node:dns';
+// IPTV CDN domains (cdn77-e6f7e5.zaypool.win) have broken-SOA DNS that
+// libc getaddrinfo (used by undici's default lookup) refuses but
+// dns.resolve4 accepts. We give undici a custom lookup that:
+//   1. tries getaddrinfo first (fast)
+//   2. falls back to dns.resolve4 on ENOTFOUND
+// undici sets the Host header itself based on the URL — so by lying to it
+// in lookup() (returning the IP for the original hostname) we keep the
+// correct Host header automatically. This was the bug with the old
+// IP-rewrite-with-custom-Host approach: fetch ignores caller-set Host.
+import dnsModule, { promises as dns } from 'node:dns';
+import { Agent, fetch as undiciFetch } from 'undici';
+
 const dnsCache = new Map(); // hostname → { ip, expires }
 const DNS_TTL = 60_000;
 
-async function resolveBypass(hostname) {
+function resolveLookup(hostname, _opts, cb) {
   const cached = dnsCache.get(hostname);
-  if (cached && cached.expires > Date.now()) return cached.ip;
-  const addrs = await dns.resolve4(hostname);
-  if (!addrs.length) throw new Error(`No A record for ${hostname}`);
-  dnsCache.set(hostname, { ip: addrs[0], expires: Date.now() + DNS_TTL });
-  return addrs[0];
+  if (cached && cached.expires > Date.now()) return cb(null, cached.ip, 4);
+
+  // Try fast libc lookup first
+  dnsModule.lookup(hostname, { family: 4 }, (err, address) => {
+    if (!err && address) {
+      dnsCache.set(hostname, { ip: address, expires: Date.now() + DNS_TTL });
+      return cb(null, address, 4);
+    }
+    // Fallback to pure resolve4 (works for broken-SOA hosts)
+    dns.resolve4(hostname).then((addrs) => {
+      if (!addrs.length) return cb(new Error(`No A record for ${hostname}`));
+      dnsCache.set(hostname, { ip: addrs[0], expires: Date.now() + DNS_TTL });
+      console.log(`[proxy] DNS fallback: ${hostname} → ${addrs[0]}`);
+      cb(null, addrs[0], 4);
+    }).catch(cb);
+  });
 }
+
+const proxyAgent = new Agent({
+  connect: { lookup: resolveLookup },
+  headersTimeout: 10_000,
+  bodyTimeout: 30_000,
+});
 
 function isDnsError(err) {
   const code = err.cause?.code || err.code;
@@ -465,59 +489,17 @@ function isDnsError(err) {
   return code === 'ENOTFOUND' || code === 'EAI_AGAIN' || msg.includes('ENOTFOUND') || msg.includes('EAI_AGAIN');
 }
 
-// Fetch one URL. On ENOTFOUND, retry with DNS bypass (resolve4 → IP + Host header).
-// Returns { res, requestedUrl } — requestedUrl always uses the ORIGINAL hostname,
-// never the IP, so callers can use it as the base for relative URL resolution
-// (manifest segments). Otherwise the CDN's vhost-based dispatch breaks.
-async function fetchOnce(url, opts = {}) {
-  try {
-    const res = await fetch(url, { ...opts, redirect: 'manual' });
-    return { res, requestedUrl: url };
-  } catch (err) {
-    if (!isDnsError(err)) throw err;
-    const u = new URL(url);
-    const ip = await resolveBypass(u.hostname);
-    const host = u.host;
-    const ipUrl = new URL(url);
-    ipUrl.hostname = ip;
-    const headers = { ...(opts.headers || {}), Host: host };
-    console.log(`[proxy] DNS bypass: ${host} → ${ip}`);
-    const res = await fetch(ipUrl.toString(), { ...opts, headers, redirect: 'manual' });
-    return { res, requestedUrl: url }; // original URL, NOT ipUrl
-  }
-}
-
-// Manual redirect handling so DNS bypass applies to every hop. On the final
-// successful response we attach _finalUrl (original hostname) for the proxy
-// route to use as the manifest base.
 async function fetchWithRetry(url, opts = {}, retries = 5, delay = 200) {
-  let currentUrl = url;
   let lastErr;
-
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      let hops = 0;
-      while (hops++ < 5) {
-        const { res, requestedUrl } = await fetchOnce(currentUrl, opts);
-        if (res.status >= 300 && res.status < 400) {
-          const loc = res.headers.get('location');
-          if (!loc) {
-            Object.defineProperty(res, '_finalUrl', { value: requestedUrl });
-            return res;
-          }
-          currentUrl = new URL(loc, requestedUrl).toString();
-          continue;
-        }
-        Object.defineProperty(res, '_finalUrl', { value: requestedUrl });
-        return res;
-      }
-      throw new Error('Too many redirects');
+      return await undiciFetch(url, { ...opts, dispatcher: proxyAgent });
     } catch (err) {
       lastErr = err;
       const dnsErr = isDnsError(err);
       const isNetwork = err.cause?.code === 'ECONNRESET' || err.cause?.code === 'ETIMEDOUT' || err.cause?.code === 'ECONNREFUSED';
       if ((dnsErr || isNetwork) && attempt < retries) {
-        if (attempt === 1) console.log(`[proxy] retry 1/${retries} (${err.cause?.code || err.code || 'DNS'}) for ${currentUrl.slice(0, 80)}...`);
+        if (attempt === 1) console.log(`[proxy] retry 1/${retries} (${err.cause?.code || err.code || 'DNS'}) for ${url.slice(0, 80)}...`);
         await new Promise((r) => setTimeout(r, delay * attempt));
         continue;
       }
@@ -553,10 +535,11 @@ router.get('/proxy', async (req, res) => {
 
     if (isManifest) {
       const text = await upstream.text();
-      // _finalUrl is set by fetchWithRetry — keeps the ORIGINAL hostname
-      // (not the IP we may have substituted for the DNS bypass), so segment
-      // requests reach the right vhost on the CDN.
-      const finalUrl = upstream._finalUrl || upstream.url || url;
+      // upstream.url is set by undici to the final URL after redirects,
+      // which preserves the original hostname (not an IP) because our
+      // custom dispatcher hands undici an IP via lookup() but the URL
+      // and Host header stay original.
+      const finalUrl = upstream.url || url;
       console.log('[proxy] manifest base url:', finalUrl);
 
       const rewritten = text

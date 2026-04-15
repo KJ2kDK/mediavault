@@ -621,6 +621,24 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
     }
   }, [channels]);
 
+  // Play an Xtream VOD (movie) — direct .mkv/.mp4 URL, no HLS. Routed through
+  // /api/iptv/proxy to bypass DNS / CORS just like live channels.
+  const playVod = useCallback((vod) => {
+    if (!vod?.url) return;
+    setActiveTab('live'); // reuse the existing player surface
+    setActiveChannel({ id: vod.id, name: vod.title || vod.name, logo: vod.thumb, url: vod.url, group: 'VOD' });
+    setPlayerStatus('loading');
+    const video = videoRef.current;
+    if (!video) { setPlayerStatus('error'); return; }
+    hlsRef.current?.destroy();
+    hlsRef.current = null;
+    const authToken = localStorage.getItem('mediavault_token') || '';
+    video.src = `/api/iptv/proxy?url=${encodeURIComponent(vod.url)}&token=${encodeURIComponent(authToken)}`;
+    video.oncanplay = () => setPlayerStatus('playing');
+    video.onerror = () => setPlayerStatus('error');
+    video.play().catch(() => {});
+  }, []);
+
   // Must come after playChannel to avoid temporal dead zone
   const listItemData = useMemo(
     () => ({ channels: visibleChannels, activeChannel, onPlay: playChannel, bookmarkedIds, onBookmark: toggleBookmark, getEpg }),
@@ -632,6 +650,19 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
   const channelsReady = channels.length > 0 && channels[0]?.id !== 'c1';
   useEffect(() => {
     if (!navPayload) return;
+
+    // VOD bookmark navigation: payload.type === 'vod' (or _tab === 'vod') → play directly
+    if (navPayload._tab === 'vod' || navPayload.type === 'vod') {
+      playVod(navPayload);
+      onClearNavPayload?.();
+      return;
+    }
+    if (navPayload._tab === 'series' || navPayload.type === 'series') {
+      setActiveTab('series');
+      onClearNavPayload?.();
+      return;
+    }
+
     if (navPayload.url) {
       if (channelsReady) {
         setActiveTab('live');
@@ -1456,7 +1487,7 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
                       key={item.id}
                       item={item}
                       size="sm"
-                      onPlay={() => {}}
+                      onPlay={playVod}
                       isBookmarked={vodBookmarkedIds.has(item.id)}
                       onBookmark={toggleVodBookmark}
                     />
@@ -1557,7 +1588,7 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
                       key={item.id}
                       item={item}
                       size="sm"
-                      onPlay={() => {}}
+                      onPlay={playVod}
                       isBookmarked={vodBookmarkedIds.has(item.id)}
                       onBookmark={toggleVodBookmark}
                     />

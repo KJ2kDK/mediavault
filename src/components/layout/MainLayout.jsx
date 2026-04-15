@@ -36,10 +36,16 @@ export default function MainLayout({ onLogout }) {
       .catch(() => {});
   }, []);
 
-  // onNavigate(section, payload?) — payload is passed to the target page once
+  // onNavigate(section, payload?) — payload is passed to the target page once.
+  // Aliases like 'livetv-vod' and 'livetv-series' map to the 'livetv' section
+  // and inject a _tab hint into the payload so LiveTVPage can switch tabs.
   const handleNavigate = (newSection, payload = null) => {
-    setSection(newSection);
-    setNavPayload(payload);
+    let resolved = newSection;
+    let p = payload;
+    if (newSection === 'livetv-vod') { resolved = 'livetv'; p = { ...(payload || {}), _tab: 'vod' }; }
+    else if (newSection === 'livetv-series') { resolved = 'livetv'; p = { ...(payload || {}), _tab: 'series' }; }
+    setSection(resolved);
+    setNavPayload(p);
   };
 
   const PageComponent = PAGES[section] || HomePage;

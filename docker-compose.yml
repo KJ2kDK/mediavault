@@ -1,0 +1,37 @@
+services:
+  mediavault:
+    build: .
+    image: mediavault:latest
+    container_name: mediavault
+    restart: unless-stopped
+
+    # Traefik (which runs on host network on this VPS) will reach this
+    # container via its bridge-network IP on port 3001. No ports: mapping
+    # is needed — traefik labels below are enough.
+    expose:
+      - "3001"
+
+    env_file:
+      - .env
+
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+
+    volumes:
+      # SQLite + subtitle cache persistence
+      - mediavault-db:/app/server/db
+      # Seedbox SSH key from the host (read-only). Mount point matches the
+      # SEEDBOX_KEY_PATH value set in .env below.
+      - /root/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
+      - /root/.ssh/known_hosts:/root/.ssh/known_hosts:ro
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mediavault.rule=Host(`media.baseinthe.cloud`)"
+      - "traefik.http.routers.mediavault.entrypoints=websecure"
+      - "traefik.http.routers.mediavault.tls.certresolver=letsencrypt"
+      - "traefik.http.services.mediavault.loadbalancer.server.port=3001"
+
+volumes:
+  mediavault-db:

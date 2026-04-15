@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { spawn } from 'node:child_process';
 import { dbLog } from './logs.js';
 import db from '../db/index.js';
 // Use Node 20's built-in fetch (undici) for better DNS + connection pooling
@@ -813,5 +814,85 @@ export function scheduledIptvSync() {
       dbLog('error', 'iptv/scheduled-sync', err.message, { stack: err.stack });
     });
 }
+
+// ── GET /api/iptv/vod-remux?url=... ──────────────────────────────────────
+// Pipes an IPTV VOD (.mkv) through ffmpeg and returns fMP4 the browser can
+// decode. Video is copied (no transcode); audio is transcoded to AAC since
+// most browsers refuse AC3/EAC3. Upstream fetch uses the same DNS-bypass
+// dispatcher as /proxy so broken-SOA CDN hosts resolve.
+router.get('/vod-remux', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).end('url required');
+
+  let ffmpeg = null;
+  let reader = null;
+
+  try {
+    const upstream = await undiciFetch(url, { dispatcher: proxyAgent });
+    if (!upstream.ok) {
+      return res.status(upstream.status).end(`Upstream error: ${upstream.status}`);
+    }
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    // video copy, audio → AAC, fragmented MP4 over stdout
+    ffmpeg = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'warning',
+      '-i', 'pipe:0',
+      '-map', '0:v:0', '-map', '0:a:0?',
+      '-c:v', 'copy',
+      '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
+      '-sn',
+      '-f', 'mp4',
+      '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+      'pipe:1',
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+    ffmpeg.stderr.on('data', (d) => {
+      const msg = d.toString().trim();
+      if (msg) console.log(`[vod-remux] ${msg.slice(0, 200)}`);
+    });
+
+    ffmpeg.on('error', (err) => {
+      console.error('[vod-remux] ffmpeg spawn error:', err.message);
+      if (!res.headersSent) res.status(500).end('ffmpeg unavailable');
+    });
+
+    // Pipe upstream (undici web ReadableStream) → ffmpeg stdin
+    reader = upstream.body.getReader();
+    (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!ffmpeg.stdin.writable) break;
+          if (!ffmpeg.stdin.write(value)) {
+            await new Promise((r) => ffmpeg.stdin.once('drain', r));
+          }
+        }
+      } catch (err) {
+        if (err.name !== 'AbortError') console.warn('[vod-remux] upstream read error:', err.message);
+      } finally {
+        try { ffmpeg.stdin.end(); } catch {}
+      }
+    })();
+
+    ffmpeg.stdout.pipe(res);
+    ffmpeg.stdout.on('end', () => { if (!res.writableEnded) res.end(); });
+
+    // Client hung up — tear everything down
+    req.on('close', () => {
+      try { reader?.cancel(); } catch {}
+      try { ffmpeg?.kill('SIGTERM'); } catch {}
+    });
+  } catch (err) {
+    try { reader?.cancel(); } catch {}
+    try { ffmpeg?.kill('SIGTERM'); } catch {}
+    dbLog('error', 'iptv/vod-remux', err.message, { stack: err.stack, context: { url: url?.slice(-120) } });
+    if (!res.headersSent) res.status(502).end(`Remux error: ${err.message}`);
+  }
+});
 
 export default router;

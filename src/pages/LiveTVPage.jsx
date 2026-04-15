@@ -621,8 +621,8 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
     }
   }, [channels]);
 
-  // Play an Xtream VOD (movie) — direct .mkv/.mp4 URL, no HLS. Routed through
-  // /api/iptv/proxy to bypass DNS / CORS just like live channels.
+  // Play an Xtream VOD — goes through /api/iptv/vod-remux which spawns ffmpeg
+  // to repackage the .mkv into browser-friendly fMP4 (video copy, audio→AAC).
   const playVod = useCallback((vod) => {
     if (!vod?.url) return;
     setActiveTab('live'); // reuse the existing player surface
@@ -633,7 +633,7 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
     hlsRef.current?.destroy();
     hlsRef.current = null;
     const authToken = localStorage.getItem('mediavault_token') || '';
-    video.src = `/api/iptv/proxy?url=${encodeURIComponent(vod.url)}&token=${encodeURIComponent(authToken)}`;
+    video.src = `/api/iptv/vod-remux?url=${encodeURIComponent(vod.url)}&token=${encodeURIComponent(authToken)}`;
     video.oncanplay = () => setPlayerStatus('playing');
     video.onerror = () => setPlayerStatus('error');
     video.play().catch(() => {});

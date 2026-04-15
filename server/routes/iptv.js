@@ -442,21 +442,81 @@ router.post('/xtream/series', async (req, res) => {
 });
 
 // Fetch with retry — handles transient DNS failures from CDN wildcard subdomains
+// dns.lookup (used by fetch internally) is strict and fails on hosts with
+// broken DNSSEC/SOA — common in IPTV CDNs like cdn77-e6f7e5.zaypool.win.
+// dns.resolve4 uses Node's pure resolver and accepts those answers.
+// On ENOTFOUND we manually resolve and retry with the IP + Host header.
+import { promises as dns } from 'node:dns';
+const dnsCache = new Map(); // hostname → { ip, expires }
+const DNS_TTL = 60_000;
+
+async function resolveBypass(hostname) {
+  const cached = dnsCache.get(hostname);
+  if (cached && cached.expires > Date.now()) return cached.ip;
+  const addrs = await dns.resolve4(hostname);
+  if (!addrs.length) throw new Error(`No A record for ${hostname}`);
+  dnsCache.set(hostname, { ip: addrs[0], expires: Date.now() + DNS_TTL });
+  return addrs[0];
+}
+
+function isDnsError(err) {
+  const code = err.cause?.code || err.code;
+  const msg = err.cause?.message || err.message || '';
+  return code === 'ENOTFOUND' || code === 'EAI_AGAIN' || msg.includes('ENOTFOUND') || msg.includes('EAI_AGAIN');
+}
+
+// Fetch one URL with DNS bypass on ENOTFOUND. No redirect following.
+async function fetchOnce(url, opts = {}) {
+  try {
+    return await fetch(url, { ...opts, redirect: 'manual' });
+  } catch (err) {
+    if (!isDnsError(err)) throw err;
+    // DNS bypass: resolve via Node's pure resolver (works on hosts that
+    // libc getaddrinfo refuses, like the IPTV CDN's broken-SOA domains).
+    const u = new URL(url);
+    const ip = await resolveBypass(u.hostname);
+    const host = u.host;
+    u.hostname = ip;
+    const headers = { ...(opts.headers || {}), Host: host };
+    console.log(`[proxy] DNS bypass: ${host} → ${ip}`);
+    return await fetch(u.toString(), { ...opts, headers, redirect: 'manual' });
+  }
+}
+
+// Manual redirect handling so DNS bypass applies to every hop, not just the
+// initial URL. fetch() with redirect:'follow' would do the second-hop DNS
+// lookup inside undici where our bypass can't reach.
 async function fetchWithRetry(url, opts = {}, retries = 5, delay = 200) {
+  let currentUrl = url;
+  let lastErr;
+
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      return await fetch(url, opts);
+      let hops = 0;
+      while (hops++ < 5) {
+        const res = await fetchOnce(currentUrl, opts);
+        if (res.status >= 300 && res.status < 400) {
+          const loc = res.headers.get('location');
+          if (!loc) return res;
+          currentUrl = new URL(loc, currentUrl).toString();
+          continue;
+        }
+        return res;
+      }
+      throw new Error('Too many redirects');
     } catch (err) {
-      const isDns = err.message?.includes('ENOTFOUND') || err.message?.includes('EAI_AGAIN');
-      const isNetwork = err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.code === 'ECONNREFUSED';
-      if ((isDns || isNetwork) && attempt < retries) {
-        if (attempt === 1) console.log(`[proxy] retry 1/${retries} (${err.code || 'DNS'}) for ${url.slice(0, 80)}...`);
+      lastErr = err;
+      const dnsErr = isDnsError(err);
+      const isNetwork = err.cause?.code === 'ECONNRESET' || err.cause?.code === 'ETIMEDOUT' || err.cause?.code === 'ECONNREFUSED';
+      if ((dnsErr || isNetwork) && attempt < retries) {
+        if (attempt === 1) console.log(`[proxy] retry 1/${retries} (${err.cause?.code || err.code || 'DNS'}) for ${currentUrl.slice(0, 80)}...`);
         await new Promise((r) => setTimeout(r, delay * attempt));
         continue;
       }
       throw err;
     }
   }
+  throw lastErr;
 }
 
 // Stream proxy — fetches manifests/segments server-side to bypass browser CORS restrictions

@@ -101,7 +101,7 @@ app.listen(PORT, async () => {
     if (connected) {
       startAutoScan(10 * 60 * 1000); // Scan every 10 minutes
       // Rescan instantly when qBit reports a new completed download
-      startQbitWatcher(seedboxRefresh, 60_000);
+      startQbitWatcher(seedboxRefresh, 15_000);
     }
   } catch (e) {
     console.warn(`[seedbox] Init skipped: ${e.message}`);

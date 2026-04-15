@@ -465,27 +465,31 @@ function isDnsError(err) {
   return code === 'ENOTFOUND' || code === 'EAI_AGAIN' || msg.includes('ENOTFOUND') || msg.includes('EAI_AGAIN');
 }
 
-// Fetch one URL with DNS bypass on ENOTFOUND. No redirect following.
+// Fetch one URL. On ENOTFOUND, retry with DNS bypass (resolve4 → IP + Host header).
+// Returns { res, requestedUrl } — requestedUrl always uses the ORIGINAL hostname,
+// never the IP, so callers can use it as the base for relative URL resolution
+// (manifest segments). Otherwise the CDN's vhost-based dispatch breaks.
 async function fetchOnce(url, opts = {}) {
   try {
-    return await fetch(url, { ...opts, redirect: 'manual' });
+    const res = await fetch(url, { ...opts, redirect: 'manual' });
+    return { res, requestedUrl: url };
   } catch (err) {
     if (!isDnsError(err)) throw err;
-    // DNS bypass: resolve via Node's pure resolver (works on hosts that
-    // libc getaddrinfo refuses, like the IPTV CDN's broken-SOA domains).
     const u = new URL(url);
     const ip = await resolveBypass(u.hostname);
     const host = u.host;
-    u.hostname = ip;
+    const ipUrl = new URL(url);
+    ipUrl.hostname = ip;
     const headers = { ...(opts.headers || {}), Host: host };
     console.log(`[proxy] DNS bypass: ${host} → ${ip}`);
-    return await fetch(u.toString(), { ...opts, headers, redirect: 'manual' });
+    const res = await fetch(ipUrl.toString(), { ...opts, headers, redirect: 'manual' });
+    return { res, requestedUrl: url }; // original URL, NOT ipUrl
   }
 }
 
-// Manual redirect handling so DNS bypass applies to every hop, not just the
-// initial URL. fetch() with redirect:'follow' would do the second-hop DNS
-// lookup inside undici where our bypass can't reach.
+// Manual redirect handling so DNS bypass applies to every hop. On the final
+// successful response we attach _finalUrl (original hostname) for the proxy
+// route to use as the manifest base.
 async function fetchWithRetry(url, opts = {}, retries = 5, delay = 200) {
   let currentUrl = url;
   let lastErr;
@@ -494,13 +498,17 @@ async function fetchWithRetry(url, opts = {}, retries = 5, delay = 200) {
     try {
       let hops = 0;
       while (hops++ < 5) {
-        const res = await fetchOnce(currentUrl, opts);
+        const { res, requestedUrl } = await fetchOnce(currentUrl, opts);
         if (res.status >= 300 && res.status < 400) {
           const loc = res.headers.get('location');
-          if (!loc) return res;
-          currentUrl = new URL(loc, currentUrl).toString();
+          if (!loc) {
+            Object.defineProperty(res, '_finalUrl', { value: requestedUrl });
+            return res;
+          }
+          currentUrl = new URL(loc, requestedUrl).toString();
           continue;
         }
+        Object.defineProperty(res, '_finalUrl', { value: requestedUrl });
         return res;
       }
       throw new Error('Too many redirects');
@@ -545,8 +553,10 @@ router.get('/proxy', async (req, res) => {
 
     if (isManifest) {
       const text = await upstream.text();
-      // Use the FINAL url after redirects as the base — node-fetch follows redirects silently
-      const finalUrl = upstream.url || url;
+      // _finalUrl is set by fetchWithRetry — keeps the ORIGINAL hostname
+      // (not the IP we may have substituted for the DNS bypass), so segment
+      // requests reach the right vhost on the CDN.
+      const finalUrl = upstream._finalUrl || upstream.url || url;
       console.log('[proxy] manifest base url:', finalUrl);
 
       const rewritten = text

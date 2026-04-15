@@ -3,11 +3,6 @@ import { createContext, useState, useCallback } from 'react';
 export const ConfigContext = createContext(null);
 
 const DEFAULT_CONFIG = {
-  plex: {
-    serverUrl: '',
-    token: '',
-    connected: false,
-  },
   qbittorrent: {
     url: '',
     username: '',

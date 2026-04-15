@@ -2,7 +2,6 @@ import { useState } from 'react';
 import HeroBanner from '../components/common/HeroBanner';
 import CarouselRow from '../components/common/CarouselRow';
 import VideoPlayer from '../components/common/VideoPlayer';
-import { usePlexLibrary } from '../hooks/usePlex';
 import { useSeedboxLibrary } from '../hooks/useSeedbox';
 import { useBookmarks } from '../hooks/useBookmarks';
 
@@ -171,36 +170,20 @@ function BookmarkedSeries({ onNavigate }) {
 }
 
 export default function HomePage({ searchQuery, onNavigate }) {
-  const { library: plexLib, connected: plexConnected, refreshLibrary: refreshPlex } = usePlexLibrary();
-  const { library: seedboxLib, connected: seedboxConnected, refreshLibrary: refreshSeedbox } = useSeedboxLibrary();
+  const { library: seedboxLib, connected, refreshLibrary } = useSeedboxLibrary();
   const [refreshing, setRefreshing] = useState(false);
   const [playingItem, setPlayingItem] = useState(null);
 
-  // Merge libraries: seedbox first, then Plex, fall back to demo
-  const connected = seedboxConnected || plexConnected;
-  const rows = {};
-  if (seedboxLib) Object.assign(rows, seedboxLib);
-  if (plexLib) {
-    for (const [key, items] of Object.entries(plexLib)) {
-      if (rows[key]) rows[key] = [...rows[key], ...items];
-      else rows[key] = items;
-    }
-  }
+  const rows = seedboxLib || {};
   const displayRows = connected && Object.keys(rows).length > 0 ? rows : DEMO_ROWS;
 
   const handlePlay = (item) => {
-    // Seedbox items have backend='seedbox', Plex items have serverUrl
-    if (item.backend === 'seedbox' || item.serverUrl) setPlayingItem(item);
+    if (item.backend === 'seedbox') setPlayingItem(item);
   };
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    try {
-      await Promise.allSettled([
-        seedboxConnected ? refreshSeedbox() : Promise.resolve(),
-        plexConnected ? refreshPlex() : Promise.resolve(),
-      ]);
-    } catch {}
+    try { if (connected) await refreshLibrary(); } catch {}
     setRefreshing(false);
   };
 

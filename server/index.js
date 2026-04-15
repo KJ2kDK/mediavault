@@ -5,7 +5,6 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import authRoutes from './routes/auth.js';
 import { requireAuth } from './middleware/auth.js';
-import plexRoutes from './routes/plex.js';
 import qbitRoutes from './routes/qbittorrent.js';
 import iptvRoutes, { scheduledIptvSync } from './routes/iptv.js';
 import rssRoutes from './routes/rss.js';
@@ -51,7 +50,6 @@ app.use('/api/rss-ingest', rssRoutes);
 app.use('/api', requireAuth);
 
 // ── Protected API routes ─────────────────────────────────────────────────────
-app.use('/api/plex', plexRoutes);
 app.use('/api/qbit', qbitRoutes);
 app.use('/api/qbittorrent', qbitRoutes); // alias — frontend uses this path
 app.use('/api/iptv', iptvRoutes);

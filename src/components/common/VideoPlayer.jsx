@@ -1,15 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import Hls from 'hls.js';
 
 /**
- * Universal video player — works with both Plex and Seedbox backends.
- * The `item.backend` prop determines which API endpoint to use:
- *   - 'seedbox' → /api/seedbox/play/:id
- *   - 'plex' (default) → /api/plex/play/:id?server=...
+ * Seedbox video player — streams fMP4 chunks via MediaSource Extensions.
+ * Backend: /api/seedbox/play/:id returns playback info + stream URL.
  */
 export default function VideoPlayer({ item, onClose }) {
   const videoRef = useRef(null);
-  const hlsRef = useRef(null);
   const [playInfo, setPlayInfo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -36,18 +32,13 @@ export default function VideoPlayer({ item, onClose }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const containerRef = useRef(null);
 
-  // Fetch playback info from server (works with both Plex and Seedbox backends)
+  // Fetch playback info from the seedbox backend
   useEffect(() => {
     const load = async () => {
       try {
-        const backend = item.backend || 'plex';
-        const playUrl = backend === 'seedbox'
-          ? `/api/seedbox/play/${item.id}`
-          : `/api/plex/play/${item.id}?server=${encodeURIComponent(item.serverUrl)}`;
-
         const token = localStorage.getItem('mediavault_token');
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
-        const res = await fetch(playUrl, { headers });
+        const res = await fetch(`/api/seedbox/play/${item.id}`, { headers });
         if (!res.ok) throw new Error(`Failed: ${res.status}`);
         const data = await res.json();
         setPlayInfo(data);
@@ -59,134 +50,84 @@ export default function VideoPlayer({ item, onClose }) {
         // Auto-load the first available subtitle (pre-cached on server)
         if (data.subtitles?.length > 0) {
           const firstSub = data.subtitles[0];
-          // Small delay to let the player initialize before loading subs
           setTimeout(() => loadSubtitleFromUrl(firstSub.url, firstSub.id), 500);
         }
       } catch (err) { setError(err.message); }
     };
     load();
-  }, [item.id, item.serverUrl, item.backend]);
+  }, [item.id]);
 
   // Ref to abort any in-flight stream fetch (critical for React StrictMode)
   const abortRef = useRef(null);
 
   // ── Start playback ────────────────────────────────────────────────────────
-  // direct / remux / remux-audio: streamed as fMP4 via MediaSource API
-  // transcode: Plex HLS → HLS.js
+  // Seedbox returns one of:
+  //   direct       — browser-compatible container/codecs, plain <video src>
+  //   remux        — fMP4 over MSE (FFmpeg copy codecs to MP4)
+  //   remux-audio  — fMP4 over MSE (audio transcoded to AAC)
+  //   transcode    — fMP4 over MSE (full transcode)
   useEffect(() => {
     if (!playInfo || !videoRef.current) return;
     const video = videoRef.current;
     if (!playInfo.streamUrl) { setError('No playback URL'); return; }
 
-    // Cleanup previous instances
-    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
     if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
 
-    // Append JWT token to stream URL so <video> / HLS.js can pass auth
     const token = localStorage.getItem('mediavault_token');
     const sep = playInfo.streamUrl.includes('?') ? '&' : '?';
     const url = token ? `${playInfo.streamUrl}${sep}token=${encodeURIComponent(token)}` : playInfo.streamUrl;
     const mode = playInfo.playbackMode || '';
-    const isHlsMode = mode === 'transcode';
+    const isFmp4Mode = mode === 'remux' || mode === 'remux-audio' || mode === 'transcode';
+    const durationMs = playInfo.duration || 0;
+    const durationSec = durationMs / 1000;
 
-    if (isHlsMode && Hls.isSupported()) {
-      // Plex HLS transcode fallback — use HLS.js
-      const hls = new Hls({
-        maxBufferLength: 30,
-        maxMaxBufferLength: 120,
-        enableWorker: true,
-        startLevel: -1,
-        fragLoadingTimeOut: 30000,
-        manifestLoadingTimeOut: 20000,
-      });
-      hlsRef.current = hls;
-      let retries = 0;
+    if (isFmp4Mode) setTotalDuration(durationSec);
 
-      hls.loadSource(url);
-      hls.attachMedia(video);
+    const handleTimeUpdate = () => {
+      const t = timeOffsetRef.current + video.currentTime;
+      setDisplayTime(t);
+      setSeekbarValue(t);
+      setIsPlaying(!video.paused);
+    };
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('play', () => setIsPlaying(true));
+    video.addEventListener('pause', () => setIsPlaying(false));
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setLoading(false);
-        video.play().catch(() => {});
-      });
-
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && retries < 2) {
-            retries++;
-            hls.recoverMediaError();
-          } else {
-            setError(`Playback error: ${data.details}`);
-          }
-        }
-      });
-    } else if (isHlsMode && video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari native HLS
-      video.src = url;
-      video.addEventListener('canplay', () => setLoading(false), { once: true });
-      video.addEventListener('error', () => setError('Playback failed'), { once: true });
-      video.play().catch(() => {});
+    // fMP4 streams require MSE (browser can't seek a live FFmpeg pipe via plain <video src>).
+    if (isFmp4Mode && typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('video/mp4; codecs="avc1.640028, mp4a.40.2"')) {
+      startMSEStream(video, url, token, playInfo);
     } else {
-      // direct / remux / remux-audio — all served as fMP4 stream
-      const isRemuxMode = mode === 'remux' || mode === 'remux-audio';
-      const durationMs = playInfo.duration || 0;
-      const durationSec = durationMs / 1000;
-
-      if (isRemuxMode) {
-        setTotalDuration(durationSec);
+      // Direct play
+      video.src = url;
+      if (!isFmp4Mode) {
+        video.addEventListener('loadedmetadata', () => {
+          setTotalDuration(video.duration);
+        }, { once: true });
       }
+    }
 
-      // Track time updates
-      const handleTimeUpdate = () => {
-        const t = timeOffsetRef.current + video.currentTime;
-        setDisplayTime(t);
-        setSeekbarValue(t);
-        setIsPlaying(!video.paused);
-      };
-      video.addEventListener('timeupdate', handleTimeUpdate);
-      video.addEventListener('play', () => setIsPlaying(true));
-      video.addEventListener('pause', () => setIsPlaying(false));
+    video.addEventListener('loadeddata', () => setLoading(false), { once: true });
+    video.addEventListener('canplay', () => setLoading(false), { once: true });
+    video.addEventListener('error', () => {
+      console.error('[VideoPlayer] native error:', video.error?.message, video.error?.code);
+      setError('Playback failed — check server logs for details');
+    }, { once: true });
 
-      // Use MediaSource API for remux streams — fMP4 requires MSE for streaming
-      if (isRemuxMode && typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('video/mp4; codecs="avc1.640028, mp4a.40.2"')) {
-        startMSEStream(video, url, token, playInfo);
-      } else {
-        // Direct play (browser-compatible container+codecs) or MSE unavailable
-        video.src = url;
-        if (!isRemuxMode) {
-          video.addEventListener('loadedmetadata', () => {
-            setTotalDuration(video.duration);
-          }, { once: true });
-        }
-      }
-
-      video.addEventListener('loadeddata', () => setLoading(false), { once: true });
-      video.addEventListener('canplay', () => setLoading(false), { once: true });
-      video.addEventListener('error', () => {
-        console.error('[VideoPlayer] native error:', video.error?.message, video.error?.code);
-        setError('Playback failed — check server logs for details');
-      }, { once: true });
-
-      // Auto-play for non-MSE paths (MSE handles its own play())
-      if (!isRemuxMode || typeof MediaSource === 'undefined') {
-        video.play().catch(() => {});
-      }
+    if (!isFmp4Mode || typeof MediaSource === 'undefined') {
+      video.play().catch(() => {});
     }
 
     return () => {
       if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
-      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
       if (videoRef.current?.src?.startsWith('blob:')) {
         URL.revokeObjectURL(videoRef.current.src);
       }
     };
   }, [playInfo]);
 
-  // ── Watch progress: auto-save every 10s + resume on load (seedbox backend) ──
+  // ── Watch progress: auto-save every 10s + resume on load ──────────────────
   useEffect(() => {
     if (!playInfo || !videoRef.current) return;
-    const backend = item.backend || 'plex';
-    if (backend !== 'seedbox') return;
 
     const video = videoRef.current;
     const itemId = `seedbox:${item.id}`;
@@ -226,7 +167,7 @@ export default function VideoPlayer({ item, onClose }) {
 
     const interval = setInterval(saveProgress, 10000);
     return () => { clearInterval(interval); saveProgress(); };
-  }, [playInfo, item.backend, item.id, item.title, item.thumb]);
+  }, [playInfo, item.id, item.title, item.thumb]);
 
   /**
    * Start a MediaSource Extensions stream.

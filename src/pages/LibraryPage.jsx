@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { usePlexLibrary } from '../hooks/usePlex';
 import { useSeedboxLibrary } from '../hooks/useSeedbox';
 import MediaCard from '../components/common/MediaCard';
 import CarouselRow from '../components/common/CarouselRow';
@@ -27,23 +26,17 @@ const DEMO_ALL = [
 ];
 
 export default function LibraryPage({ searchQuery }) {
-  const { library: plexLib, connected: plexConnected } = usePlexLibrary();
-  const { library: seedboxLib, connected: seedboxConnected } = useSeedboxLibrary();
+  const { library: seedboxLib, connected } = useSeedboxLibrary();
   const [activeFilter, setActiveFilter] = useState('All');
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
   const [sortBy, setSortBy] = useState('title'); // 'title' | 'year' | 'rating'
   const [playingItem, setPlayingItem] = useState(null);
 
-  const connected = seedboxConnected || plexConnected;
-
-  // Merge all library items from both sources, dedupe by id
+  // Dedupe by id from the seedbox library sections
   const merged = {};
-  for (const lib of [seedboxLib, plexLib]) {
-    if (!lib) continue;
-    for (const items of Object.values(lib)) {
-      for (const item of items) {
-        merged[item.id] = item;
-      }
+  if (seedboxLib) {
+    for (const items of Object.values(seedboxLib)) {
+      for (const item of items) merged[item.id] = item;
     }
   }
   let items = connected ? Object.values(merged) : DEMO_ALL;

@@ -7,12 +7,6 @@ export default defineConfig({
     port: 3000,
     proxy: {
       // Stream endpoints need special handling to avoid buffering
-      '/api/plex/stream': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-        timeout: 0,
-        proxyTimeout: 0,
-      },
       '/api/seedbox/stream': {
         target: 'http://localhost:3001',
         changeOrigin: true,

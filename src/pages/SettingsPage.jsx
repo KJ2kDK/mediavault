@@ -246,53 +246,6 @@ export default function SettingsPage() {
         <p className="text-sm text-vault-muted">Configure your media services and connections.</p>
       </div>
 
-      {/* Plex */}
-      <section className="p-5 rounded-xl bg-vault-surface border border-vault-border">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-[#e5a00d]/15 flex items-center justify-center">
-              <span className="font-display text-lg text-[#e5a00d]">P</span>
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-vault-text">Plex Media Server</h3>
-              <p className="text-[10px] text-vault-muted">Stream your library</p>
-            </div>
-          </div>
-          <StatusBadge service="plex" />
-        </div>
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          <InputField
-            label="Server URL"
-            value={config.plex.serverUrl}
-            onChange={(v) => updateConfig('plex', { serverUrl: v })}
-            placeholder="http://localhost:32400"
-          />
-          <InputField
-            label="Auth Token"
-            value={config.plex.token}
-            onChange={(v) => updateConfig('plex', { token: v })}
-            type="password"
-            placeholder="Your Plex token"
-          />
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => testConnection('plex')}
-            className="px-4 py-2 rounded-lg bg-vault-accent text-white text-xs font-medium hover:bg-vault-accentHover transition-colors"
-          >
-            Test Connection
-          </button>
-          <a
-            href="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/"
-            target="_blank"
-            rel="noreferrer"
-            className="text-[10px] text-vault-teal hover:underline"
-          >
-            How to find your Plex token →
-          </a>
-        </div>
-      </section>
-
       {/* qBittorrent */}
       <section className="p-5 rounded-xl bg-vault-surface border border-vault-border">
         <div className="flex items-center justify-between mb-4">
@@ -861,7 +814,7 @@ export default function SettingsPage() {
       <section className="p-5 rounded-xl bg-vault-surface border border-vault-border">
         <h3 className="text-sm font-semibold text-vault-text mb-2">About MediaVault</h3>
         <p className="text-xs text-vault-muted leading-relaxed">
-          MediaVault v0.1.0 — Your unified media hub. Connect Plex for library browsing, load IPTV
+          MediaVault v0.1.0 — Your unified media hub. Stream from your seedbox via SSH, load IPTV
           channels via M3U or Xtream Codes, track news with RSS feeds, and manage downloads through
           qBittorrent. All in one sleek interface.
         </p>

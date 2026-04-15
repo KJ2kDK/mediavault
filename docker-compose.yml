@@ -25,6 +25,15 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
+      # Node 17+ defaults to verbatim DNS ordering which can flake on
+      # IPv4-only IPTV hosts when the resolver returns AAAA first.
+      - NODE_OPTIONS=--dns-result-order=ipv4first
+
+    # Hard-coded fallback for the Xtream API host so a transient DNS
+    # blip never kills a live stream. Update this IP if the provider
+    # ever moves: getent hosts spliffstar.ottb.xyz on the host.
+    extra_hosts:
+      - "spliffstar.ottb.xyz:107.189.14.157"
 
     volumes:
       # SQLite + subtitle cache persistence

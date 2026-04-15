@@ -163,4 +163,65 @@ export async function lookupShow(title) {
   }
 }
 
-export default { isEnabled, lookupMovie, lookupShow };
+/**
+ * Raw search: return the top N results for a query with minimal processing.
+ * Used by the manual match UI (no caching — user may be iterating).
+ */
+export async function searchRaw(query, type = 'movie', limit = 10) {
+  if (!API_KEY || !query) return [];
+  const endpoint = type === 'tv' ? '/search/tv' : '/search/movie';
+  try {
+    const data = await tmdbFetch(endpoint, { query });
+    return (data.results || []).slice(0, limit).map((r) => ({
+      tmdbId: r.id,
+      type,
+      title: r.title || r.name,
+      year: (r.release_date || r.first_air_date || '').slice(0, 4) || null,
+      poster: r.poster_path ? `${IMG}/w200${r.poster_path}` : null,
+      rating: r.vote_average ? Math.round(r.vote_average * 10) / 10 : null,
+      overview: r.overview || '',
+    }));
+  } catch (err) {
+    console.warn(`[tmdb] searchRaw failed:`, err.message);
+    return [];
+  }
+}
+
+/**
+ * Look up a specific TMDB item by ID + type. Returns full enrichment data
+ * matching the lookupMovie/lookupShow shape so it can be applied to items.
+ */
+export async function lookupById(tmdbId, type) {
+  if (!API_KEY || !tmdbId) return null;
+  try {
+    const endpoint = type === 'tv' ? `/tv/${tmdbId}` : `/movie/${tmdbId}`;
+    const full = await tmdbFetch(endpoint);
+    const title = full.title || full.name;
+    const date = full.release_date || full.first_air_date || '';
+    const year = date ? parseInt(date.slice(0, 4), 10) : null;
+    const result = {
+      tmdbId: full.id,
+      type,
+      title,
+      year,
+      poster: full.poster_path ? `${IMG}/w500${full.poster_path}` : null,
+      backdrop: full.backdrop_path ? `${IMG}/w1280${full.backdrop_path}` : null,
+      rating: full.vote_average ? Math.round(full.vote_average * 10) / 10 : null,
+      genres: (full.genres || []).map((g) => g.name).join(', '),
+      overview: full.overview || null,
+    };
+    // Also cache under a normalized key so auto-match on rescan uses it
+    const key = normalizeKey(type, title, year);
+    writeCache(key, type, {
+      tmdb_id: full.id, title, year,
+      poster: result.poster, backdrop: result.backdrop,
+      rating: result.rating, genres: result.genres, overview: result.overview,
+    });
+    return result;
+  } catch (err) {
+    console.warn(`[tmdb] lookupById failed for ${type}/${tmdbId}:`, err.message);
+    return null;
+  }
+}
+
+export default { isEnabled, lookupMovie, lookupShow, searchRaw, lookupById };

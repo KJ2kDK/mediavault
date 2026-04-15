@@ -195,6 +195,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_logs_level  ON error_logs(level, created_at DESC);
 `);
 
+// ── Seedbox manual TMDB matches (user overrides for auto-match) ─────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS seedbox_matches (
+    item_id    INTEGER PRIMARY KEY,
+    tmdb_id    INTEGER NOT NULL,
+    type       TEXT    NOT NULL CHECK(type IN ('movie','tv')),
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+`);
+
 // ── TMDB metadata cache ──────────────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS tmdb_cache (

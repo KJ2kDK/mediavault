@@ -77,8 +77,10 @@ async function refreshLibrary() {
     const cacheInfo = stats ? ` (${stats.scannedDirs} scanned, ${stats.cachedDirs} cached)` : '';
     console.log(`[seedbox] Scan complete: ${movies.length} movies, ${Object.keys(shows).length} shows (${elapsed}s)${cacheInfo}`);
 
-    // Background TMDB enrichment (doesn't block the scan)
+    // Apply any manual overrides FIRST (user-selected TMDB matches)
     if (tmdb.isEnabled()) {
+      applyManualOverrides().catch((e) => console.warn('[seedbox] Override apply failed:', e.message));
+      // Then background TMDB auto-enrichment for anything without an override
       enrichWithTMDB(libraryCache).catch((e) => console.warn('[seedbox] TMDB enrichment failed:', e.message));
     }
 
@@ -95,6 +97,57 @@ async function refreshLibrary() {
     scanInProgress = false;
   }
 }
+
+// ── GET /api/seedbox/tmdb/search?q=...&type=movie|tv ──────────────────────
+// Manual TMDB search for the "Fix Match" UI
+router.get('/tmdb/search', async (req, res) => {
+  try {
+    if (!tmdb.isEnabled()) return res.status(503).json({ error: 'TMDB not configured' });
+    const { q, type = 'movie' } = req.query;
+    if (!q?.trim()) return res.json({ results: [] });
+    const results = await tmdb.searchRaw(q.trim(), type === 'tv' ? 'tv' : 'movie', 12);
+    res.json({ results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/seedbox/tmdb/match ──────────────────────────────────────────
+// Body: { itemId, tmdbId, type } — manually assign a TMDB match
+router.post('/tmdb/match', async (req, res) => {
+  try {
+    if (!tmdb.isEnabled()) return res.status(503).json({ error: 'TMDB not configured' });
+    const { itemId, tmdbId, type } = req.body || {};
+    if (!itemId || !tmdbId || !type) return res.status(400).json({ error: 'itemId, tmdbId, type required' });
+
+    const meta = await tmdb.lookupById(tmdbId, type);
+    if (!meta) return res.status(404).json({ error: 'TMDB item not found' });
+
+    // Store override so it survives rescans
+    db.prepare('INSERT OR REPLACE INTO seedbox_matches (item_id, tmdb_id, type) VALUES (?, ?, ?)')
+      .run(Number(itemId), Number(tmdbId), type);
+
+    // Apply immediately to in-memory index
+    const targets = findMatchTargets(Number(itemId));
+    for (const t of targets) applyTmdb(t, meta);
+
+    res.json({ matched: meta, applied: targets.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── DELETE /api/seedbox/tmdb/match/:itemId ────────────────────────────────
+// Clear a manual match — next scan will auto-match again
+router.delete('/tmdb/match/:itemId', (req, res) => {
+  try {
+    const id = Number(req.params.itemId);
+    db.prepare('DELETE FROM seedbox_matches WHERE item_id = ?').run(id);
+    res.json({ cleared: id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── GET /api/seedbox/status ─────────────────────────────────────────────────
 router.get('/status', (req, res) => {
@@ -667,7 +720,8 @@ function getProgressForItem(id) {
 
 /**
  * Background TMDB enrichment — fetches metadata for each unique title
- * and attaches it to items in the mediaIndex. Runs after a scan completes.
+ * and attaches it to items in the mediaIndex. Skips items that already
+ * have a manual override or fresh enrichment data.
  */
 async function enrichWithTMDB(library) {
   if (!library) return;
@@ -679,11 +733,12 @@ async function enrichWithTMDB(library) {
     const key = `${movie.title}|${movie.year || ''}`;
     if (movieKeys.has(key)) continue;
     movieKeys.add(key);
+    if (movie.tmdbId) continue; // already has a match
 
     const meta = await tmdb.lookupMovie(movie.title, movie.year);
     if (!meta) continue;
-    // Attach to all movies with matching title+year
     for (const m of library.movies) {
+      if (m.tmdbId) continue;
       if (m.title === movie.title && m.year === movie.year) {
         applyTmdb(m, meta);
         enriched++;
@@ -693,11 +748,15 @@ async function enrichWithTMDB(library) {
 
   // Enrich shows — one lookup per show title
   for (const [showTitle, show] of Object.entries(library.shows)) {
+    // Check if any episode of this show already has a match
+    const firstEp = Object.values(show.seasons)[0]?.[0];
+    if (firstEp?.tmdbId) continue;
+
     const meta = await tmdb.lookupShow(showTitle);
     if (!meta) continue;
-    // Attach to all episodes of the show
     for (const season of Object.values(show.seasons)) {
       for (const ep of season) {
+        if (ep.tmdbId) continue;
         applyTmdb(ep, meta);
         enriched++;
       }
@@ -707,7 +766,48 @@ async function enrichWithTMDB(library) {
   if (enriched > 0) console.log(`[seedbox] TMDB enriched ${enriched} items`);
 }
 
+/**
+ * Apply all manual TMDB overrides to items in the current mediaIndex.
+ * Called after each scan so user-chosen matches survive rescans.
+ */
+async function applyManualOverrides() {
+  const overrides = db.prepare('SELECT item_id, tmdb_id, type FROM seedbox_matches').all();
+  if (!overrides.length) return;
+
+  let applied = 0;
+  for (const ov of overrides) {
+    const targets = findMatchTargets(ov.item_id);
+    if (!targets.length) continue;
+    const meta = await tmdb.lookupById(ov.tmdb_id, ov.type);
+    if (!meta) continue;
+    for (const t of targets) {
+      applyTmdb(t, meta);
+      applied++;
+    }
+  }
+  if (applied > 0) console.log(`[seedbox] Applied ${applied} manual matches from ${overrides.length} overrides`);
+}
+
+/**
+ * Given an item id, return all mediaIndex items that should share the same
+ * TMDB match. For movies that's just the item itself. For shows, it's every
+ * episode of the same show (so matching S01E01 applies to all episodes).
+ */
+function findMatchTargets(itemId) {
+  const item = mediaIndex.get(itemId);
+  if (!item) return [];
+  if (item.showTitle) {
+    const targets = [];
+    for (const other of mediaIndex.values()) {
+      if (other.showTitle === item.showTitle) targets.push(other);
+    }
+    return targets;
+  }
+  return [item];
+}
+
 function applyTmdb(item, meta) {
+  item.tmdbId = meta.tmdbId;
   item.tmdbTitle = meta.title;
   item.tmdbYear = meta.year;
   item.tmdbPoster = meta.poster;

@@ -440,14 +440,15 @@ router.post('/xtream/series', async (req, res) => {
 });
 
 // Fetch with retry — handles transient DNS failures from CDN wildcard subdomains
-async function fetchWithRetry(url, opts = {}, retries = 3, delay = 500) {
+async function fetchWithRetry(url, opts = {}, retries = 5, delay = 200) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       return await fetch(url, opts);
     } catch (err) {
       const isDns = err.message?.includes('ENOTFOUND') || err.message?.includes('EAI_AGAIN');
-      if (isDns && attempt < retries) {
-        console.log(`[proxy] DNS retry ${attempt}/${retries} for ${url.slice(0, 80)}...`);
+      const isNetwork = err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.code === 'ECONNREFUSED';
+      if ((isDns || isNetwork) && attempt < retries) {
+        if (attempt === 1) console.log(`[proxy] retry 1/${retries} (${err.code || 'DNS'}) for ${url.slice(0, 80)}...`);
         await new Promise((r) => setTimeout(r, delay * attempt));
         continue;
       }

@@ -11,6 +11,14 @@ services:
     expose:
       - "3001"
 
+    # Use external DNS servers directly. Docker's embedded resolver
+    # (127.0.0.11 → host systemd-resolved) can be flaky under sustained
+    # load — IPTV streams do thousands of DNS lookups per minute against
+    # ephemeral CDN URLs, which exposes the flakiness.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
     env_file:
       - .env
 

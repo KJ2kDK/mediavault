@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import HeroBanner from '../components/common/HeroBanner';
 import CarouselRow from '../components/common/CarouselRow';
-import PlexPlayer from '../components/common/PlexPlayer';
+import VideoPlayer from '../components/common/VideoPlayer';
 import { usePlexLibrary } from '../hooks/usePlex';
+import { useSeedboxLibrary } from '../hooks/useSeedbox';
 import { useBookmarks } from '../hooks/useBookmarks';
 
 // Demo data — replaced by Plex API data when connected
@@ -170,18 +171,36 @@ function BookmarkedSeries({ onNavigate }) {
 }
 
 export default function HomePage({ searchQuery, onNavigate }) {
-  const { library, connected, loading, refreshLibrary } = usePlexLibrary();
+  const { library: plexLib, connected: plexConnected, refreshLibrary: refreshPlex } = usePlexLibrary();
+  const { library: seedboxLib, connected: seedboxConnected, refreshLibrary: refreshSeedbox } = useSeedboxLibrary();
   const [refreshing, setRefreshing] = useState(false);
   const [playingItem, setPlayingItem] = useState(null);
-  const rows = connected && library ? library : DEMO_ROWS;
+
+  // Merge libraries: seedbox first, then Plex, fall back to demo
+  const connected = seedboxConnected || plexConnected;
+  const rows = {};
+  if (seedboxLib) Object.assign(rows, seedboxLib);
+  if (plexLib) {
+    for (const [key, items] of Object.entries(plexLib)) {
+      if (rows[key]) rows[key] = [...rows[key], ...items];
+      else rows[key] = items;
+    }
+  }
+  const displayRows = connected && Object.keys(rows).length > 0 ? rows : DEMO_ROWS;
 
   const handlePlay = (item) => {
-    if (item.serverUrl) setPlayingItem(item);
+    // Seedbox items have backend='seedbox', Plex items have serverUrl
+    if (item.backend === 'seedbox' || item.serverUrl) setPlayingItem(item);
   };
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    try { await refreshLibrary(); } catch {}
+    try {
+      await Promise.allSettled([
+        seedboxConnected ? refreshSeedbox() : Promise.resolve(),
+        plexConnected ? refreshPlex() : Promise.resolve(),
+      ]);
+    } catch {}
     setRefreshing(false);
   };
 
@@ -193,7 +212,7 @@ export default function HomePage({ searchQuery, onNavigate }) {
         <div className="mx-6 mb-6 px-4 py-3 rounded-lg bg-vault-card border border-vault-border flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-vault-gold animate-pulse" />
           <p className="text-sm text-vault-muted">
-            Showing demo content — connect your Plex server in <span className="text-vault-teal">Settings</span> to browse your library.
+            Showing demo content — configure your seedbox in <span className="text-vault-teal">Settings</span> to browse your library.
           </p>
         </div>
       )}
@@ -208,7 +227,7 @@ export default function HomePage({ searchQuery, onNavigate }) {
             <svg className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
-            {refreshing ? 'Scanning libraries...' : 'Refresh Plex Libraries'}
+            {refreshing ? 'Scanning libraries...' : 'Refresh Libraries'}
           </button>
         </div>
       )}
@@ -217,12 +236,12 @@ export default function HomePage({ searchQuery, onNavigate }) {
       <BookmarkedVod onNavigate={onNavigate} />
       <BookmarkedSeries onNavigate={onNavigate} />
 
-      {Object.entries(rows).map(([title, items]) => (
+      {Object.entries(displayRows).map(([title, items]) => (
         <CarouselRow key={title} title={title} items={items} onPlay={handlePlay} />
       ))}
 
       {playingItem && (
-        <PlexPlayer item={playingItem} onClose={() => setPlayingItem(null)} />
+        <VideoPlayer item={playingItem} onClose={() => setPlayingItem(null)} />
       )}
     </div>
   );

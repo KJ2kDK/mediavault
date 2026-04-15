@@ -74,9 +74,11 @@ export default function MediaCard({ item, size = 'md', onPlay, onInfo, isBookmar
             </span>
           )}
         </div>
-        {item.episode && (
+        {item.subtitle ? (
+          <span className="text-xs text-vault-teal mt-0.5 block">{item.subtitle}</span>
+        ) : item.episode ? (
           <span className="text-xs text-vault-teal mt-0.5 block">{item.episode}</span>
-        )}
+        ) : null}
 
         {/* Progress bar */}
         {item.progress > 0 && (

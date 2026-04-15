@@ -2,9 +2,32 @@ import { Router } from 'express';
 import fetch from 'node-fetch';
 import https from 'https';
 import { spawn, execSync } from 'child_process';
+import { mkdirSync, readFileSync, existsSync, unlinkSync, readdirSync, rmdirSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import db from '../db/index.js';
 
 const router = Router();
 const agent = new https.Agent({ rejectUnauthorized: false });
+
+// ── Subtitle cache helpers ──────────────────────────────────────────────────
+function subCacheKey(serverUrl, partId, streamId) {
+  return `${serverUrl}:${partId}:${streamId}`;
+}
+
+function getCachedSub(serverUrl, partId, streamId) {
+  const key = subCacheKey(serverUrl, partId, streamId);
+  const row = db.prepare('SELECT vtt FROM subtitle_cache WHERE key = ?').get(key);
+  return row?.vtt || null;
+}
+
+function setCachedSub(serverUrl, partId, streamId, vtt) {
+  const key = subCacheKey(serverUrl, partId, streamId);
+  db.prepare('INSERT OR REPLACE INTO subtitle_cache (key, vtt, created_at) VALUES (?, ?, unixepoch())').run(key, vtt);
+}
+
+// In-flight extraction tracker — prevents duplicate FFmpeg jobs for the same track
+const extractionInFlight = new Map(); // key → Promise<string|null>
 
 // ── FFmpeg detection ─────────────────────────────────────────────────────────
 let FFMPEG_PATH = 'ffmpeg';
@@ -362,7 +385,9 @@ router.get('/play/:id', async (req, res) => {
         title = `${lang} (${tags.join(', ')})`;
       }
 
-      const subUrl = `/api/plex/subtitle?server=${encodeURIComponent(serverUrl)}&partId=${part.id}&streamId=${s.id}&ratingKey=${req.params.id}`;
+      // FFmpeg subtitle index = position of this stream among ALL subtitle streams (including non-text)
+      const ffmpegSubIdx = rawSubs.findIndex((rs) => rs.id === s.id);
+      const subUrl = `/api/plex/subtitle?server=${encodeURIComponent(serverUrl)}&partId=${part.id}&streamId=${s.id}&ratingKey=${req.params.id}&subIndex=${ffmpegSubIdx >= 0 ? ffmpegSubIdx : 0}&codec=${s.codec}&path=${encodeURIComponent(part.key)}`;
       return {
         id: s.id,
         language: lang,
@@ -411,60 +436,252 @@ router.get('/play/:id', async (req, res) => {
       subtitles,
       thumb: item.thumb ? `/api/plex/thumb?server=${enc(serverUrl)}&path=${enc(item.thumb)}` : null,
     });
+
+    // ── Background pre-extract ALL subtitle tracks so switching mid-movie is instant ──
+    const subTracksForPreExtract = textSubs.map((s) => {
+      const ffmpegSubIdx = rawSubs.findIndex((rs) => rs.id === s.id);
+      return {
+        streamId: String(s.id),
+        subIndex: ffmpegSubIdx >= 0 ? ffmpegSubIdx : 0,
+        codec: s.codec,
+      };
+    });
+    preExtractSubtitles(serverUrl, String(part.id), partPath, subTracksForPreExtract);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// ── Single-pass FFmpeg extraction: reads the file ONCE, extracts ALL subtitle tracks ──
+// This is critical for large files (4.8GB+) — avoids downloading the file N times for N tracks.
+let bulkExtractionInFlight = null; // Promise for the current bulk extraction job
+
+function extractAllSubtitlesFFmpeg(serverUrl, partPath, subtitleTracks) {
+  const token = process.env.PLEX_TOKEN;
+  const inputUrl = `${serverUrl}${partPath}?X-Plex-Token=${token}`;
+  const tempDir = join(tmpdir(), `mediavault-subs-${Date.now()}`);
+  mkdirSync(tempDir, { recursive: true });
+
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-hide_banner', '-loglevel', 'warning',
+      '-probesize', '50000000',         // 50 MB probe window
+      '-analyzeduration', '10000000',   // 10 seconds analysis
+      '-i', inputUrl,
+    ];
+
+    // Map each subtitle track to its own output file
+    const outputMap = []; // { streamId, subIndex, codec, filePath }
+    for (const track of subtitleTracks) {
+      const outFormat = (track.codec === 'ass' || track.codec === 'ssa') ? 'ass' : 'srt';
+      const outExt = outFormat;
+      const filePath = join(tempDir, `sub_${track.subIndex}.${outExt}`);
+      args.push('-map', `0:s:${track.subIndex}`, '-c:s', 'copy');
+      args.push(filePath);
+      outputMap.push({ ...track, filePath, outFormat });
+    }
+
+    console.log(`[plex] FFmpeg bulk subtitle extract: ${subtitleTracks.length} tracks → ${tempDir}`);
+    const ffmpeg = spawn(FFMPEG_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stderrBuf = '';
+    ffmpeg.stderr.on('data', (d) => {
+      stderrBuf += d.toString();
+      if (stderrBuf.length > 3000) stderrBuf = stderrBuf.slice(-2000);
+    });
+
+    ffmpeg.on('close', (code) => {
+      // Even if FFmpeg exits non-zero, some files may have been written successfully
+      const results = [];
+      for (const entry of outputMap) {
+        try {
+          if (existsSync(entry.filePath)) {
+            const raw = readFileSync(entry.filePath, 'utf-8');
+            if (raw.length > 10) {
+              results.push({ streamId: entry.streamId, codec: entry.codec, raw });
+            }
+          }
+        } catch {}
+      }
+
+      // Cleanup temp files
+      try {
+        for (const f of readdirSync(tempDir)) unlinkSync(join(tempDir, f));
+        rmdirSync(tempDir);
+      } catch {}
+
+      if (results.length > 0) {
+        console.log(`[plex] FFmpeg bulk extract: ${results.length}/${subtitleTracks.length} tracks extracted (exit code ${code})`);
+        resolve(results);
+      } else {
+        reject(new Error(`FFmpeg bulk subtitle extract failed (code ${code}): ${stderrBuf.slice(-300)}`));
+      }
+    });
+
+    ffmpeg.on('error', (err) => {
+      try {
+        for (const f of readdirSync(tempDir)) unlinkSync(join(tempDir, f));
+        rmdirSync(tempDir);
+      } catch {}
+      reject(err);
+    });
+
+    // Hard timeout: 300s for bulk extraction (reading large file once)
+    setTimeout(() => {
+      if (!ffmpeg.killed) {
+        console.log(`[plex] FFmpeg bulk subtitle timeout (300s) — killing`);
+        ffmpeg.kill('SIGTERM');
+      }
+    }, 300000);
+  });
+}
+
+// Convert raw subtitle text to VTT and cache it
+function convertAndCache(serverUrl, partId, streamId, codec, rawText) {
+  let text = rawText;
+  if (!text.startsWith('WEBVTT')) {
+    if (text.includes('[Script Info]') || text.includes('Dialogue:')) {
+      text = assToVtt(text);
+    } else {
+      text = srtToVtt(text);
+    }
+  }
+  setCachedSub(serverUrl, partId, streamId, text);
+  return text;
+}
+
+// Background pre-extraction: ONE FFmpeg pass extracts ALL subtitle tracks
+function preExtractSubtitles(serverUrl, partId, partPath, subtitleTracks) {
+  if (!FFMPEG_PATH || !partPath || !subtitleTracks?.length) return;
+
+  // Skip if a bulk extraction is already running
+  if (bulkExtractionInFlight) {
+    console.log(`[plex] Bulk subtitle extraction already in-flight — skipping duplicate`);
+    return;
+  }
+
+  // Skip if all tracks are already cached
+  const uncached = subtitleTracks.filter((t) => !getCachedSub(serverUrl, partId, t.streamId));
+  if (uncached.length === 0) {
+    console.log(`[plex] All ${subtitleTracks.length} subtitle tracks already cached`);
+    return;
+  }
+
+  console.log(`[plex] Pre-extracting ${uncached.length} uncached subtitle tracks (of ${subtitleTracks.length} total) in single FFmpeg pass...`);
+
+  // Store promise so subtitle endpoint can wait on it
+  const promise = (async () => {
+    try {
+      const results = await extractAllSubtitlesFFmpeg(serverUrl, partPath, uncached);
+      for (const r of results) {
+        convertAndCache(serverUrl, partId, r.streamId, r.codec, r.raw);
+      }
+      console.log(`[plex] Background pre-extraction complete: ${results.length} tracks cached`);
+    } catch (e) {
+      console.error(`[plex] Background pre-extraction failed: ${e.message}`);
+    } finally {
+      bulkExtractionInFlight = null;
+    }
+  })();
+
+  bulkExtractionInFlight = promise;
+}
+
+// Single track extraction fallback (used if bulk extraction failed or not started)
+function extractSingleSubtitleFFmpeg(serverUrl, partPath, subIndex, codec) {
+  const token = process.env.PLEX_TOKEN;
+  const inputUrl = `${serverUrl}${partPath}?X-Plex-Token=${token}`;
+  const outFormat = (codec === 'ass' || codec === 'ssa') ? 'ass' : 'srt';
+
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-hide_banner', '-loglevel', 'error',
+      '-probesize', '50000000',
+      '-analyzeduration', '10000000',
+      '-i', inputUrl,
+      '-map', `0:s:${subIndex || 0}`,
+      '-c:s', 'copy',
+      '-f', outFormat,
+      'pipe:1',
+    ];
+
+    const ffmpeg = spawn(FFMPEG_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    let lastDataAt = Date.now();
+
+    ffmpeg.stdout.on('data', (d) => { out += d.toString(); lastDataAt = Date.now(); });
+    ffmpeg.stderr.on('data', (d) => { err += d.toString(); });
+
+    ffmpeg.on('close', (code) => {
+      if (out.length > 10) resolve(out);
+      else reject(new Error(`FFmpeg single subtitle extract failed (code ${code}): ${err.slice(0, 300)}`));
+    });
+    ffmpeg.on('error', reject);
+
+    // 180s hard timeout + idle kill
+    const hardTimeout = setTimeout(() => { if (!ffmpeg.killed) ffmpeg.kill('SIGTERM'); }, 180000);
+    const idleCheck = setInterval(() => {
+      if (out.length > 50 && Date.now() - lastDataAt > 8000) {
+        clearTimeout(hardTimeout);
+        ffmpeg.kill('SIGTERM');
+      }
+    }, 2000);
+    ffmpeg.on('close', () => { clearTimeout(hardTimeout); clearInterval(idleCheck); });
+  });
+}
+
 // ── GET /api/plex/subtitle — extract embedded subtitle ───────────────────────
 router.get('/subtitle', async (req, res) => {
   try {
     const token = process.env.PLEX_TOKEN;
-    const { server: serverUrl, partId, streamId, ratingKey } = req.query;
+    const { server: serverUrl, partId, streamId, ratingKey, subIndex, codec, path: partPath } = req.query;
+    console.log(`[plex] Subtitle request: streamId=${streamId}, subIndex=${subIndex}, codec=${codec}`);
     if (!token || !serverUrl || !streamId) return res.status(400).json({ error: 'missing params' });
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-
-    // Try multiple Plex API paths
-    const urls = [
-      partId && `${serverUrl}/library/parts/${partId}/subtitles?format=srt&selectedStreamID=${streamId}&X-Plex-Token=${token}`,
-      `${serverUrl}/library/streams/${streamId}?X-Plex-Token=${token}`,
-    ].filter(Boolean);
-
-    let text = null;
-    for (const url of urls) {
-      try {
-        console.log(`[plex] Trying subtitle URL: ${url.slice(0, 100)}...`);
-        const subRes = await fetch(url, {
-          agent: serverUrl.startsWith('https') ? agent : undefined,
-          signal: controller.signal,
-        });
-        if (subRes.ok) {
-          text = await subRes.text();
-          if (text && text.length > 10) break;
-        }
-      } catch (e) {
-        console.log(`[plex] Subtitle URL failed: ${e.message}`);
-      }
+    if (!FFMPEG_PATH || !partPath) {
+      return res.status(501).json({ error: 'FFmpeg required for embedded subtitle extraction' });
     }
-    clearTimeout(timer);
 
-    if (!text) return res.status(404).json({ error: 'Could not extract subtitle' });
+    // 1. Check cache first (instant)
+    let vtt = getCachedSub(serverUrl, partId, streamId);
+    if (vtt) {
+      console.log(`[plex] Subtitle cache HIT: streamId=${streamId}`);
+      res.set('Content-Type', 'text/vtt; charset=utf-8');
+      res.set('Cache-Control', 'public, max-age=86400');
+      return res.send(vtt);
+    }
 
-    // Convert to VTT
-    if (!text.startsWith('WEBVTT')) {
-      if (text.includes('[Script Info]') || text.includes('Dialogue:')) {
-        text = assToVtt(text);
-      } else {
-        text = srtToVtt(text);
+    // 2. If bulk extraction is in-flight, wait for it (it reads the file once for ALL tracks)
+    if (bulkExtractionInFlight) {
+      console.log(`[plex] Waiting for bulk extraction to complete for streamId=${streamId}...`);
+      await bulkExtractionInFlight;
+      // Check cache again — bulk extraction should have populated it
+      vtt = getCachedSub(serverUrl, partId, streamId);
+      if (vtt) {
+        console.log(`[plex] Subtitle available after bulk extraction: streamId=${streamId}`);
+        res.set('Content-Type', 'text/vtt; charset=utf-8');
+        res.set('Cache-Control', 'public, max-age=86400');
+        return res.send(vtt);
       }
     }
 
-    console.log(`[plex] Subtitle extracted: ${text.length} chars`);
+    // 3. Fallback: single-track extraction (shouldn't normally reach here)
+    console.log(`[plex] Single-track fallback extraction for streamId=${streamId}`);
+    try {
+      let rawText = await extractSingleSubtitleFFmpeg(serverUrl, partPath, subIndex, codec);
+      if (rawText && rawText.length > 10) {
+        vtt = convertAndCache(serverUrl, partId, streamId, codec, rawText);
+      }
+    } catch (e) {
+      console.error(`[plex] Single-track extraction failed: ${e.message}`);
+    }
+
+    if (!vtt) return res.status(404).json({ error: 'Could not extract subtitle' });
+
     res.set('Content-Type', 'text/vtt; charset=utf-8');
     res.set('Cache-Control', 'public, max-age=86400');
-    res.send(text);
+    res.send(vtt);
   } catch (err) {
     console.error('[plex] subtitle error:', err.message);
     res.status(502).json({ error: err.message });
@@ -529,15 +746,22 @@ router.get('/stream', async (req, res) => {
         '-hide_banner', '-loglevel', 'warning',
       ];
 
-      // Seek support: ?start=120 → skip to 2min
-      if (start && Number(start) > 0) {
-        args.push('-ss', String(start));
+      const seekSec = start && Number(start) > 0 ? Number(start) : 0;
+
+      if (seekSec > 0 && mode === 'remux') {
+        // Remux (audio copy): fast seek before -i is fine since both streams are copied
+        args.push('-ss', String(seekSec));
       }
 
-      args.push(
-        '-i', inputUrl,
-        '-c:v', 'copy',                    // Video: always copy (original quality)
-      );
+      args.push('-i', inputUrl);
+
+      if (seekSec > 0 && mode === 'remux-audio') {
+        // Remux-audio (audio transcode): seek AFTER -i for accurate A/V sync
+        // Fast seek before -i can land on a different keyframe for video vs audio
+        args.push('-ss', String(seekSec));
+      }
+
+      args.push('-c:v', 'copy');              // Video: always copy (original quality)
 
       if (mode === 'remux-audio') {
         // Audio needs transcode (DTS/TrueHD → AAC)
@@ -545,6 +769,7 @@ router.get('/stream', async (req, res) => {
           '-c:a', 'aac',
           '-b:a', '320k',                   // High quality AAC
           '-ac', String(channels || 2),      // Preserve channel count if stereo, downmix if surround
+          '-async', '1',                     // Sync audio to video timestamps after seek
         );
       } else {
         args.push('-c:a', 'copy');           // Audio: copy original

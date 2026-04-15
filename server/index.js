@@ -17,6 +17,10 @@ import predbRoutes from './routes/predb.js';
 import predbnetRoutes from './routes/predbnet.js';
 import chatRoutes from './routes/chat.js';
 import nordicbytesRoutes from './routes/nordicbytes.js';
+import seedboxRoutes, { startAutoScan } from './routes/seedbox.js';
+import adminRoutes from './routes/admin.js';
+import argonRoutes from './routes/argon.js';
+import { initPool as initSeedbox } from './services/seedbox.js';
 import db from './db/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -59,6 +63,9 @@ app.use('/api/predbnet', predbnetRoutes);
 app.use('/api/logs', logsRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/nordicbytes', nordicbytesRoutes);
+app.use('/api/seedbox', seedboxRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/argon', argonRoutes);
 
 // ── Daily IPTV auto-refresh (checks every 30 min, syncs if > 23h old) ─────────
 setInterval(() => {
@@ -85,6 +92,16 @@ app.get('*', (req, res) => {
   res.sendFile(join(__dirname, '../dist/index.html'));
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`MediaVault running on http://localhost:${PORT}`);
+
+  // ── Initialize seedbox connection + auto-scan ──────────────────────────
+  try {
+    const connected = await initSeedbox();
+    if (connected) {
+      startAutoScan(10 * 60 * 1000); // Scan every 10 minutes
+    }
+  } catch (e) {
+    console.warn(`[seedbox] Init skipped: ${e.message}`);
+  }
 });

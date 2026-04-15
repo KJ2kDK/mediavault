@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { usePlexLibrary } from '../hooks/usePlex';
+import { useSeedboxLibrary } from '../hooks/useSeedbox';
 import MediaCard from '../components/common/MediaCard';
 import CarouselRow from '../components/common/CarouselRow';
-import PlexPlayer from '../components/common/PlexPlayer';
+import VideoPlayer from '../components/common/VideoPlayer';
 
 const FILTERS = ['All', 'Movies', 'TV Shows', 'Music', '4K', 'Unwatched'];
 
@@ -26,15 +27,26 @@ const DEMO_ALL = [
 ];
 
 export default function LibraryPage({ searchQuery }) {
-  const { library, connected } = usePlexLibrary();
+  const { library: plexLib, connected: plexConnected } = usePlexLibrary();
+  const { library: seedboxLib, connected: seedboxConnected } = useSeedboxLibrary();
   const [activeFilter, setActiveFilter] = useState('All');
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
   const [sortBy, setSortBy] = useState('title'); // 'title' | 'year' | 'rating'
   const [playingItem, setPlayingItem] = useState(null);
 
-  let items = connected
-    ? Object.values(library || {}).flat().filter((v, i, a) => a.findIndex((x) => x.id === v.id) === i)
-    : DEMO_ALL;
+  const connected = seedboxConnected || plexConnected;
+
+  // Merge all library items from both sources, dedupe by id
+  const merged = {};
+  for (const lib of [seedboxLib, plexLib]) {
+    if (!lib) continue;
+    for (const items of Object.values(lib)) {
+      for (const item of items) {
+        merged[item.id] = item;
+      }
+    }
+  }
+  let items = connected ? Object.values(merged) : DEMO_ALL;
 
   // Filter
   if (activeFilter === 'Movies') items = items.filter((i) => i.type === 'movie');
@@ -150,7 +162,7 @@ export default function LibraryPage({ searchQuery }) {
         </div>
       )}
       {playingItem && (
-        <PlexPlayer item={playingItem} onClose={() => setPlayingItem(null)} />
+        <VideoPlayer item={playingItem} onClose={() => setPlayingItem(null)} />
       )}
     </div>
   );

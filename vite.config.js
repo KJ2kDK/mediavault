@@ -10,7 +10,12 @@ export default defineConfig({
       '/api/plex/stream': {
         target: 'http://localhost:3001',
         changeOrigin: true,
-        // Increase timeout for long-running FFmpeg streams
+        timeout: 0,
+        proxyTimeout: 0,
+      },
+      '/api/seedbox/stream': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
         timeout: 0,
         proxyTimeout: 0,
       },

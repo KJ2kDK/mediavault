@@ -16,10 +16,11 @@ router.post('/register', async (req, res) => {
     if (count > 0) return res.status(403).json({ error: 'Registration disabled — user already exists' });
 
     const hash = await bcrypt.hash(password, 10);
-    const result = db.prepare('INSERT INTO users (username, password) VALUES (?, ?)').run(username, hash);
+    // First user is always admin
+    const result = db.prepare("INSERT INTO users (username, password, role) VALUES (?, ?, 'admin')").run(username, hash);
 
-    const token = signToken({ id: result.lastInsertRowid, username });
-    res.json({ token, username });
+    const token = signToken({ id: result.lastInsertRowid, username, role: 'admin' });
+    res.json({ token, username, role: 'admin' });
   } catch (err) {
     if (err.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Username already exists' });
     res.status(500).json({ error: err.message });
@@ -38,8 +39,8 @@ router.post('/login', async (req, res) => {
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
-    const token = signToken({ id: user.id, username: user.username });
-    res.json({ token, username: user.username });
+    const token = signToken({ id: user.id, username: user.username, role: user.role || 'user' });
+    res.json({ token, username: user.username, role: user.role || 'user' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -47,7 +48,10 @@ router.post('/login', async (req, res) => {
 
 // GET /api/auth/me — check if token is valid
 router.get('/me', requireAuth, (req, res) => {
-  res.json({ username: req.user.username });
+  // Re-fetch role from DB in case it was updated since the token was issued
+  const user = db.prepare('SELECT username, role FROM users WHERE id = ?').get(req.user.id);
+  if (!user) return res.status(401).json({ error: 'User not found' });
+  res.json({ username: user.username, role: user.role || 'user' });
 });
 
 // GET /api/auth/status — check if any users exist (public)

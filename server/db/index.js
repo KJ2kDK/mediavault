@@ -171,6 +171,13 @@ db.exec(`
 try { db.exec('ALTER TABLE rss_items ADD COLUMN sent_at INTEGER'); } catch {}
 // Add metadata columns for UNIT3D tracker feeds (size, seeders, resolution, etc.)
 try { db.exec('ALTER TABLE rss_items ADD COLUMN meta TEXT'); } catch {}
+// Add role column to users (admin / user)
+try { db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"); } catch {}
+// Make the first user an admin automatically
+try {
+  const first = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
+  if (first) db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(first.id);
+} catch {}
 
 // ── Error Logs ────────────────────────────────────────────────────────────────
 db.exec(`
@@ -186,6 +193,24 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_logs_time   ON error_logs(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_logs_level  ON error_logs(level, created_at DESC);
+`);
+
+// ── TMDB metadata cache ──────────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS tmdb_cache (
+    key         TEXT    PRIMARY KEY,
+    tmdb_id     INTEGER,
+    type        TEXT    NOT NULL CHECK(type IN ('movie','tv')),
+    title       TEXT,
+    year        INTEGER,
+    poster      TEXT,
+    backdrop    TEXT,
+    rating      REAL,
+    genres      TEXT,
+    overview    TEXT,
+    fetched_at  INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_tmdb_fetched ON tmdb_cache(fetched_at);
 `);
 
 // ── Users ────────────────────────────────────────────────────────────────────

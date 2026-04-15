@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import HomePage from '../../pages/HomePage';
@@ -7,6 +7,7 @@ import LiveTVPage from '../../pages/LiveTVPage';
 import NewsPage from '../../pages/NewsPage';
 import DownloadsPage from '../../pages/DownloadsPage';
 import SettingsPage from '../../pages/SettingsPage';
+import MissionControlPage from '../../pages/MissionControlPage';
 import ChatPanel from '../chat/ChatPanel';
 
 const PAGES = {
@@ -16,6 +17,7 @@ const PAGES = {
   news: NewsPage,
   downloads: DownloadsPage,
   settings: SettingsPage,
+  'mission-control': MissionControlPage,
 };
 
 export default function MainLayout({ onLogout }) {
@@ -23,6 +25,16 @@ export default function MainLayout({ onLogout }) {
   const [navPayload, setNavPayload] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [userRole, setUserRole] = useState(null);
+
+  // Fetch user role on mount (must manually attach token — global wrapper skips /api/auth/)
+  useEffect(() => {
+    const token = localStorage.getItem('mediavault_token');
+    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => { if (data?.role) setUserRole(data.role); })
+      .catch(() => {});
+  }, []);
 
   // onNavigate(section, payload?) — payload is passed to the target page once
   const handleNavigate = (newSection, payload = null) => {
@@ -40,6 +52,7 @@ export default function MainLayout({ onLogout }) {
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         onLogout={onLogout}
+        isAdmin={userRole === 'admin'}
       />
       <div className="flex-1 flex flex-col overflow-hidden">
         <TopBar

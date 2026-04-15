@@ -16,7 +16,8 @@ import predbRoutes from './routes/predb.js';
 import predbnetRoutes from './routes/predbnet.js';
 import chatRoutes from './routes/chat.js';
 import nordicbytesRoutes from './routes/nordicbytes.js';
-import seedboxRoutes, { startAutoScan } from './routes/seedbox.js';
+import seedboxRoutes, { startAutoScan, refreshLibrary as seedboxRefresh } from './routes/seedbox.js';
+import { startQbitWatcher } from './services/qbit-watcher.js';
 import adminRoutes from './routes/admin.js';
 import argonRoutes from './routes/argon.js';
 import { initPool as initSeedbox } from './services/seedbox.js';
@@ -99,6 +100,8 @@ app.listen(PORT, async () => {
     const connected = await initSeedbox();
     if (connected) {
       startAutoScan(10 * 60 * 1000); // Scan every 10 minutes
+      // Rescan instantly when qBit reports a new completed download
+      startQbitWatcher(seedboxRefresh, 60_000);
     }
   } catch (e) {
     console.warn(`[seedbox] Init skipped: ${e.message}`);

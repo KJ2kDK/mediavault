@@ -208,4 +208,5 @@ function formatEta(seconds) {
   return `${seconds}s`;
 }
 
+export { qbitFetch };
 export default router;

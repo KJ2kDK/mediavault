@@ -6,6 +6,28 @@ const router = Router();
 // ── Tool definitions (reusable with OpenRouter later) ────────────────────────
 const tools = [
   {
+    name: 'newShowsReleases',
+    description: 'Show new TV / series releases from today',
+    keywords: ['new show', 'new shows', 'new tv show', 'new tv shows', 'new series', 'new episode', 'tv show', 'new in tv', 'new in series'],
+    fn: () => {
+      const windowStart = Math.floor(Date.now() / 1000) - 86400 * 2; // last 48h
+      const rows = db.prepare(`
+        SELECT title, feed_name as source, category, pub_date FROM rss_items
+        WHERE pub_date >= ? ORDER BY pub_date DESC LIMIT 500
+      `).all(windowStart);
+      const tvRows = rows.filter((r) =>
+        /S\d{1,2}E\d{1,2}|\bSeason\b|\bEpisode\b/i.test(r.title) ||
+        /TV|Series/i.test(r.category || '')
+      ).slice(0, 25);
+      if (!tvRows.length) return { answer: 'No new TV shows / series in the last 48 hours.' };
+      const items = tvRows.map((r) => ({
+        text: `**${r.title}** — _${r.source}_ • ${fmtAgo(r.pub_date)}`,
+        nav: { page: 'news', search: r.title.split(/\s+/).slice(0, 3).join(' ') },
+      }));
+      return { answer: `${tvRows.length} recent TV releases:`, items };
+    },
+  },
+  {
     name: 'newReleases',
     description: 'Show new scene releases or RSS items from today/this week',
     keywords: ['new release', 'released today', 'latest release', 'new today', 'came out', 'recent release', 'releases today', 'latest'],
@@ -232,7 +254,7 @@ router.post('/', (req, res) => {
 
     // True fallback
     res.json({
-      answer: `No results found. Here's what I can help with:\n\n• **"What's on TV now?"** — current EPG\n• **"Schedule for TV2"** — channel schedule\n• **"New releases today?"** — latest releases\n• **"Gold Rush episodes"** — search by title\n• **"Show my bookmarks"** — saved content\n• **"System status"** — health & errors\n• **"Show channels"** — IPTV groups`,
+      answer: `No results found. Try:\n\n• **"New releases today?"** — latest scene releases\n• **"New TV shows"** — new episodes from last 48h\n• **"Gold Rush episodes"** — search releases by title\n• **"Show my bookmarks"** — saved content\n• **"Watch history"** — recently played\n• **"System status"** — health & errors`,
     });
   } catch (err) {
     res.status(500).json({ answer: `Error: ${err.message}` });

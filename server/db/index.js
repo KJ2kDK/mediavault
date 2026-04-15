@@ -171,13 +171,7 @@ db.exec(`
 try { db.exec('ALTER TABLE rss_items ADD COLUMN sent_at INTEGER'); } catch {}
 // Add metadata columns for UNIT3D tracker feeds (size, seeders, resolution, etc.)
 try { db.exec('ALTER TABLE rss_items ADD COLUMN meta TEXT'); } catch {}
-// Add role column to users (admin / user)
-try { db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"); } catch {}
-// Make the first user an admin automatically
-try {
-  const first = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
-  if (first) db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(first.id);
-} catch {}
+// (users table + role migration moved to end of file, near users CREATE TABLE)
 
 // ── Error Logs ────────────────────────────────────────────────────────────────
 db.exec(`
@@ -229,8 +223,18 @@ db.exec(`
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     username   TEXT    NOT NULL UNIQUE,
     password   TEXT    NOT NULL,
+    role       TEXT    NOT NULL DEFAULT 'user',
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 `);
+
+// Migration: add role column for DBs created before it existed
+try { db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"); } catch {}
+
+// First user is always admin (runs every startup, idempotent)
+try {
+  const first = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
+  if (first) db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(first.id);
+} catch {}
 
 export default db;

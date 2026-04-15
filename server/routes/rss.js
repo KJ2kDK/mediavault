@@ -54,6 +54,79 @@ function parseUnit3dMeta(content) {
   return meta;
 }
 
+// TorrentLeech detail page — parse HTML for seeders/leechers/snatches/IMDB.
+// TL RSS is minimal; this enriches items by fetching their detail page.
+// Returns null if no new data could be extracted.
+function parseTorrentLeechDetail(html) {
+  if (!html) return null;
+  const meta = {};
+
+  // Seeders — TL renders these in various ways across pages.
+  //  <span class="seedersCount">N</span> on modern layouts
+  //  <td class="seeders">N</td> on older
+  //  "Seeders: N" in metadata blocks
+  const seedMatch =
+    html.match(/class=["'][^"']*seed(?:er|ersCount)[^"']*["'][^>]*>\s*(\d+)/i) ||
+    html.match(/>\s*Seeders?\s*<[^>]*>\s*<[^>]*>\s*(\d+)/i) ||
+    html.match(/Seeders?\s*:\s*(\d+)/i);
+  if (seedMatch) meta.seeders = parseInt(seedMatch[1]);
+
+  const leechMatch =
+    html.match(/class=["'][^"']*leech(?:er|ersCount)[^"']*["'][^>]*>\s*(\d+)/i) ||
+    html.match(/>\s*Leechers?\s*<[^>]*>\s*<[^>]*>\s*(\d+)/i) ||
+    html.match(/Leechers?\s*:\s*(\d+)/i);
+  if (leechMatch) meta.leechers = parseInt(leechMatch[1]);
+
+  const snatchMatch =
+    html.match(/class=["'][^"']*(?:snatched|snatchCount|completed)[^"']*["'][^>]*>\s*(\d+)/i) ||
+    html.match(/>\s*(?:Snatches?|Completed|Downloaded)\s*<[^>]*>\s*<[^>]*>\s*(\d+)/i) ||
+    html.match(/(?:Snatched|Completed|Downloaded)\s*:\s*(\d+)/i);
+  if (snatchMatch) meta.completed = parseInt(snatchMatch[1]);
+
+  // IMDB
+  const imdbMatch = html.match(/imdb\.com\/title\/(tt\d+)/i);
+  if (imdbMatch) meta.imdbId = imdbMatch[1];
+
+  // TMDB (rare on TL but possible)
+  const tmdbMatch = html.match(/themoviedb\.org\/(?:movie|tv)\/(\d+)/i);
+  if (tmdbMatch) meta.tmdbId = tmdbMatch[1];
+
+  // Uploader — TL shows "Uploaded by Anonymous" or links to profile
+  const uploaderMatch =
+    html.match(/Uploaded by\s*<[^>]*>([^<]+)</i) ||
+    html.match(/Uploaded by\s*:?\s*([^\s<,]+)/i);
+  if (uploaderMatch) meta.uploader = uploaderMatch[1].trim();
+
+  return Object.keys(meta).length ? meta : null;
+}
+
+// Enrich a batch of TorrentLeech items by fetching their detail pages.
+// Limits concurrency to avoid tripping rate limits; caps total work so a
+// refresh on a 350-item feed doesn't take forever (only enriches newest 50).
+async function enrichTorrentLeechItems(items, cookie) {
+  const targets = items
+    .filter((i) => i.link && /torrentleech\.org\/(torrent|rss)/i.test(i.link))
+    .slice(0, 50); // only the newest 50 per feed
+  if (!targets.length) return;
+
+  const CONCURRENCY = 5;
+  let cursor = 0;
+
+  const workers = Array.from({ length: CONCURRENCY }, async () => {
+    while (cursor < targets.length) {
+      const item = targets[cursor++];
+      try {
+        const html = await fetchFeedXml(item.link, cookie);
+        const extracted = parseTorrentLeechDetail(html);
+        if (extracted) {
+          item.meta = { ...(item.meta || {}), ...extracted };
+        }
+      } catch { /* silently skip one bad item */ }
+    }
+  });
+  await Promise.all(workers);
+}
+
 function parseGenericMeta(item) {
   // Tries to pull torrent-style metadata from any RSS item's content/title
   const content = item.content || item['content:encoded'] || item.contentSnippet || '';
@@ -242,6 +315,7 @@ router.post('/fetch', async (req, res) => {
           console.log(`[rss-debug] ${feed.name} enclosure:`, parsed.items[0].enclosure);
           console.log(`[rss-debug] ${feed.name} guid:`, parsed.items[0].guid);
         }
+        const feedItemsStart = allItems.length;
         parsed.items.slice(0, 150).forEach((item) => {
           const cats = extractCategories(item);
           const link = item.link || item.guid || '';
@@ -267,6 +341,12 @@ router.post('/fetch', async (req, res) => {
             meta: meta ? { ...meta, detailUrl } : null,
           });
         });
+
+        // TorrentLeech enrichment: scrape detail pages for seeders/leechers/IMDB
+        if (/torrentleech\.org/i.test(feed.url)) {
+          const feedItems = allItems.slice(feedItemsStart);
+          await enrichTorrentLeechItems(feedItems, feed.cookie);
+        }
       } catch (err) {
         console.error(`[rss] ${feed.name}: ${err.message}`);
         feedErrors.push({ name: feed.name, error: err.message });

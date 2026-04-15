@@ -170,7 +170,7 @@ function BookmarkedSeries({ onNavigate }) {
 }
 
 export default function HomePage({ searchQuery, onNavigate }) {
-  const { library: seedboxLib, connected, refreshLibrary } = useSeedboxLibrary();
+  const { library: seedboxLib, connected, refreshLibrary, refetch } = useSeedboxLibrary();
   const [refreshing, setRefreshing] = useState(false);
   const [playingItem, setPlayingItem] = useState(null);
 
@@ -220,7 +220,7 @@ export default function HomePage({ searchQuery, onNavigate }) {
       <BookmarkedSeries onNavigate={onNavigate} />
 
       {Object.entries(displayRows).map(([title, items]) => (
-        <CarouselRow key={title} title={title} items={items} onPlay={handlePlay} />
+        <CarouselRow key={title} title={title} items={items} onPlay={handlePlay} onMatched={refetch} />
       ))}
 
       {playingItem && (

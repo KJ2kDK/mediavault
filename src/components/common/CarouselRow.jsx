@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from 'react';
 import MediaCard from './MediaCard';
 
-export default function CarouselRow({ title, items, cardSize = 'md', onPlay }) {
+export default function CarouselRow({ title, items, cardSize = 'md', onPlay, onMatched }) {
   const scrollRef = useRef(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(true);
@@ -57,6 +57,7 @@ export default function CarouselRow({ title, items, cardSize = 'md', onPlay }) {
               item={item}
               size={cardSize}
               onPlay={onPlay}
+              onMatched={onMatched}
             />
           ))}
         </div>

@@ -26,7 +26,7 @@ const DEMO_ALL = [
 ];
 
 export default function LibraryPage({ searchQuery }) {
-  const { library: seedboxLib, connected } = useSeedboxLibrary();
+  const { library: seedboxLib, connected, refetch } = useSeedboxLibrary();
   const [activeFilter, setActiveFilter] = useState('All');
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
   const [sortBy, setSortBy] = useState('title'); // 'title' | 'year' | 'rating'
@@ -124,7 +124,7 @@ export default function LibraryPage({ searchQuery }) {
       {viewMode === 'grid' ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4">
           {items.map((item) => (
-            <MediaCard key={item.id} item={item} size="md" onPlay={(i) => i.serverUrl ? setPlayingItem(i) : null} />
+            <MediaCard key={item.id} item={item} size="md" onPlay={(i) => i.backend === 'seedbox' ? setPlayingItem(i) : null} onMatched={refetch} />
           ))}
         </div>
       ) : (

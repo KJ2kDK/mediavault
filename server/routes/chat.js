@@ -6,10 +6,6 @@ const router = Router();
 // ── Tool definitions (reusable with OpenRouter later) ────────────────────────
 const tools = [
   {
-    name: 'whatsOnNow',
-    description: 'Show what is currently playing on live TV channels',
-  },
-  {
     name: 'newReleases',
     description: 'Show new scene releases or RSS items from today/this week',
     keywords: ['new release', 'released today', 'latest release', 'new today', 'came out', 'recent release', 'releases today', 'latest'],

@@ -1,7 +1,9 @@
 import { Router } from 'express';
-import fetch from 'node-fetch';
 import { dbLog } from './logs.js';
 import db from '../db/index.js';
+// Use Node 20's built-in fetch (undici) for better DNS + connection pooling
+// under concurrent IPTV stream load. node-fetch v3 had repeated ENOTFOUND
+// races even with /etc/hosts pinned.
 
 const router = Router();
 

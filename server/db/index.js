@@ -215,6 +215,7 @@ db.exec(`
     fetched_at  INTEGER NOT NULL DEFAULT (unixepoch())
   );
   CREATE INDEX IF NOT EXISTS idx_tmdb_fetched ON tmdb_cache(fetched_at);
+  CREATE INDEX IF NOT EXISTS idx_tmdb_id_type ON tmdb_cache(tmdb_id, type);
 `);
 
 // ── Users ────────────────────────────────────────────────────────────────────

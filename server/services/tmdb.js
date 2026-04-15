@@ -193,6 +193,29 @@ export async function searchRaw(query, type = 'movie', limit = 10) {
  */
 export async function lookupById(tmdbId, type) {
   if (!API_KEY || !tmdbId) return null;
+
+  // Cache check: scan by tmdb_id + type (no name needed). This keeps manual
+  // matches fast on restart — hits DB once instead of calling TMDB API.
+  const cached = db.prepare(
+    'SELECT * FROM tmdb_cache WHERE tmdb_id = ? AND type = ?'
+  ).get(tmdbId, type);
+  if (cached) {
+    const age = Math.floor(Date.now() / 1000) - cached.fetched_at;
+    if (age <= CACHE_TTL) {
+      return {
+        tmdbId: cached.tmdb_id,
+        type: cached.type,
+        title: cached.title,
+        year: cached.year,
+        poster: cached.poster,
+        backdrop: cached.backdrop,
+        rating: cached.rating,
+        genres: cached.genres,
+        overview: cached.overview,
+      };
+    }
+  }
+
   try {
     const endpoint = type === 'tv' ? `/tv/${tmdbId}` : `/movie/${tmdbId}`;
     const full = await tmdbFetch(endpoint);

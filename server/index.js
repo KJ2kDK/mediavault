@@ -21,6 +21,8 @@ import { startQbitWatcher } from './services/qbit-watcher.js';
 import adminRoutes from './routes/admin.js';
 import argonRoutes from './routes/argon.js';
 import { initPool as initSeedbox } from './services/seedbox.js';
+import { initWebSocket } from './services/ws-hub.js';
+import { startTelegramBot } from './services/telegram.js';
 import db from './db/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -92,8 +94,14 @@ app.get('*', (req, res) => {
   res.sendFile(join(__dirname, '../dist/index.html'));
 });
 
-app.listen(PORT, async () => {
+const server = app.listen(PORT, async () => {
   console.log(`MediaVault running on http://localhost:${PORT}`);
+
+  // ── WebSocket hub for browser ↔ Telegram bridge ────────────────────────
+  initWebSocket(server);
+
+  // ── Telegram bot ───────────────────────────────────────────────────────
+  startTelegramBot().catch((e) => console.warn(`[telegram] Start failed: ${e.message}`));
 
   // ── Initialize seedbox connection + auto-scan ──────────────────────────
   try {

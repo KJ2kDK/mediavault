@@ -310,30 +310,11 @@ router.get('/play/:id', async (req, res) => {
       external: true,
     }));
 
-    // Also check for embedded subtitles via ffprobe
-    const embeddedSubs = (probeData.streams || [])
-      .filter((s) => s.codec_type === 'subtitle')
-      .map((s, idx) => {
-        const lang = s.tags?.language || s.tags?.title || 'Unknown';
-        const codec = s.codec_name || 'unknown';
-        // Only list text-based subtitle formats
-        if (!['subrip', 'srt', 'ass', 'ssa', 'webvtt', 'mov_text'].includes(codec)) return null;
-        return {
-          id: 1000 + idx,
-          language: LANG_NAMES[lang] || lang,
-          code: lang,
-          title: s.tags?.title || LANG_NAMES[lang] || lang,
-          codec: codec === 'subrip' ? 'srt' : codec,
-          url: `/api/seedbox/subtitle?path=${encodeURIComponent(item.path)}&embedded=${idx}&codec=${codec}`,
-          external: false,
-        };
-      })
-      .filter(Boolean);
+    // Skip embedded subtitle extraction — external .srt files are served directly
+    // and embedded extraction via ffmpeg exhausts the SSH connection pool.
+    const allSubs = subtitles;
 
-    // Merge: external subs first (they're the NORDiC release subs), then embedded
-    const allSubs = [...subtitles, ...embeddedSubs];
-
-    // Pre-cache all subtitles in background (instant next time)
+    // Pre-cache external subs only (reads .srt files, no ffmpeg)
     if (allSubs.length > 0) {
       preCacheSubtitles(allSubs, item.path);
     }
@@ -653,22 +634,22 @@ function analyzePlayback(probeData) {
 
   const info = { container, videoCodec, audioCodec, resolution };
 
-  // Direct play
+  // Direct play — browser-native container + codecs
   if (BROWSER_CONTAINERS.has(container) && BROWSER_VIDEO.has(videoCodec) && BROWSER_AUDIO.has(audioCodec)) {
     return { ...info, mode: 'direct', reason: 'Browser-compatible — playing original' };
   }
 
-  // Remux only (container change, codecs preserved)
+  // Remux only — container change (e.g. MKV→MP4), codecs preserved, no quality loss
   if (BROWSER_VIDEO.has(videoCodec) && REMUX_SAFE_AUDIO.has(audioCodec)) {
     return { ...info, mode: 'remux', reason: `Remuxing ${container.toUpperCase()}→MP4 — original quality` };
   }
 
-  // Remux + audio transcode (video copy, audio to AAC)
+  // Remux + audio transcode — video copy, audio to AAC
   if (BROWSER_VIDEO.has(videoCodec)) {
     return { ...info, mode: 'remux-audio', reason: `Original video, ${audioCodec.toUpperCase()}→AAC audio` };
   }
 
-  // Full transcode
+  // Full transcode — unsupported video codec
   return { ...info, mode: 'transcode', reason: `${videoCodec.toUpperCase()} needs full transcode` };
 }
 
@@ -908,5 +889,7 @@ export function stopAutoScan() {
   }
 }
 
+export function getMediaIndex() { return mediaIndex; }
+export function getLibraryCache() { return libraryCache; }
 export { refreshLibrary };
 export default router;

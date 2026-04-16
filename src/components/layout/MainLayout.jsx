@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Sidebar from './Sidebar';
+import useWebSocket from '../../hooks/useWebSocket';
 import TopBar from './TopBar';
 import HomePage from '../../pages/HomePage';
 import LibraryPage from '../../pages/LibraryPage';
@@ -9,6 +10,7 @@ import DownloadsPage from '../../pages/DownloadsPage';
 import SettingsPage from '../../pages/SettingsPage';
 import MissionControlPage from '../../pages/MissionControlPage';
 import ChatPanel from '../chat/ChatPanel';
+import VideoPlayer from '../common/VideoPlayer';
 
 const PAGES = {
   home: HomePage,
@@ -26,6 +28,7 @@ export default function MainLayout({ onLogout }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [userRole, setUserRole] = useState(null);
+  const [remotePlayItem, setRemotePlayItem] = useState(null);
 
   // Fetch user role on mount (must manually attach token — global wrapper skips /api/auth/)
   useEffect(() => {
@@ -37,8 +40,6 @@ export default function MainLayout({ onLogout }) {
   }, []);
 
   // onNavigate(section, payload?) — payload is passed to the target page once.
-  // Aliases like 'livetv-vod' and 'livetv-series' map to the 'livetv' section
-  // and inject a _tab hint into the payload so LiveTVPage can switch tabs.
   const handleNavigate = (newSection, payload = null) => {
     let resolved = newSection;
     let p = payload;
@@ -47,6 +48,33 @@ export default function MainLayout({ onLogout }) {
     setSection(resolved);
     setNavPayload(p);
   };
+
+  // WebSocket: receive remote play commands from Telegram bot
+  const handleWsPlay = useCallback((msg) => {
+    // Play seedbox media in a floating overlay
+    setRemotePlayItem({
+      id: msg.itemId,
+      title: msg.title || 'Remote Play',
+      backend: 'seedbox',
+      resumeAt: msg.resumeAt || 0,
+    });
+  }, []);
+
+  const handleWsPlayChannel = useCallback((msg) => {
+    // Play live TV channel — navigate to LiveTV page
+    handleNavigate('livetv', { autoPlayChannel: msg.channelId, streamUrl: msg.streamUrl, name: msg.name });
+  }, []);
+
+  const handleWsNotify = useCallback((text) => {
+    console.log('[ws] notification:', text);
+  }, []);
+
+  useWebSocket({
+    onPlay: handleWsPlay,
+    onPlayChannel: handleWsPlayChannel,
+    onNavigate: handleNavigate,
+    onNotify: handleWsNotify,
+  });
 
   const PageComponent = PAGES[section] || HomePage;
 
@@ -76,6 +104,9 @@ export default function MainLayout({ onLogout }) {
         </main>
       </div>
       <ChatPanel onNavigate={handleNavigate} />
+      {remotePlayItem && (
+        <VideoPlayer item={remotePlayItem} onClose={() => setRemotePlayItem(null)} />
+      )}
     </div>
   );
 }

@@ -103,7 +103,13 @@ export default function MainLayout({ onLogout }) {
           />
         </main>
       </div>
-      <ChatPanel onNavigate={handleNavigate} />
+      <ChatPanel onNavigate={handleNavigate} onPlay={(action) => {
+        if (action.type === 'play') {
+          setRemotePlayItem({ id: action.itemId, title: action.title || 'Playing', backend: 'seedbox', resumeAt: action.resumeAt || 0 });
+        } else if (action.type === 'play-channel') {
+          handleNavigate('livetv', { autoPlayChannel: action.channelId, streamUrl: action.streamUrl, name: action.name });
+        }
+      }} />
       {remotePlayItem && (
         <VideoPlayer item={remotePlayItem} onClose={() => setRemotePlayItem(null)} />
       )}

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 
-export default function ChatPanel({ onNavigate }) {
+export default function ChatPanel({ onNavigate, onPlay }) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([
     { role: 'assistant', text: 'Hey! Ask me about live TV, new releases, your bookmarks, or system status.' },
@@ -32,6 +32,7 @@ export default function ChatPanel({ onNavigate }) {
       });
       const data = await res.json();
       setMessages((prev) => [...prev, { role: 'assistant', text: data.answer || 'No response.', items: data.items || null, buttons: data.buttons || null }]);
+      if (data.action && onPlay) onPlay(data.action);
     } catch {
       setMessages((prev) => [...prev, { role: 'assistant', text: 'Connection error. Is the server running?' }]);
     } finally {
@@ -50,6 +51,7 @@ export default function ChatPanel({ onNavigate }) {
       });
       const data = await res.json();
       setMessages((prev) => [...prev, { role: 'assistant', text: data.answer || 'No response.', items: data.items || null, buttons: data.buttons || null }]);
+      if (data.action && onPlay) onPlay(data.action);
     } catch {
       setMessages((prev) => [...prev, { role: 'assistant', text: 'Connection error.' }]);
     } finally { setLoading(false); }

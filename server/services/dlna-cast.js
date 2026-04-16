@@ -8,7 +8,8 @@
  * giving full codec support — Atmos, DTS-HD, TrueHD passthrough to receiver.
  */
 
-import { Client as SsdpClient } from 'node-ssdp';
+import pkg from 'node-ssdp';
+const { Client: SsdpClient } = pkg;
 
 const RENDERER_URN = 'urn:schemas-upnp-org:device:MediaRenderer:1';
 const TRANSPORT_URN = 'urn:schemas-upnp-org:service:AVTransport:1';

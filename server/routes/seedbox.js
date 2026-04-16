@@ -621,7 +621,7 @@ async function ffprobe(filePath) {
 const BROWSER_VIDEO = new Set(['h264', 'h265', 'hevc', 'vp8', 'vp9', 'av1']);
 const BROWSER_AUDIO = new Set(['aac', 'mp3', 'opus', 'flac', 'vorbis', 'ac3', 'eac3']);
 const BROWSER_CONTAINERS = new Set(['mp4', 'mov', 'webm']);
-const REMUX_SAFE_AUDIO = new Set(['aac', 'mp3', 'opus', 'flac', 'vorbis']);
+const REMUX_SAFE_AUDIO = new Set(['aac', 'mp3', 'opus', 'flac', 'vorbis', 'ac3', 'eac3']);
 
 function analyzePlayback(probeData) {
   const videoStream = (probeData.streams || []).find((s) => s.codec_type === 'video');

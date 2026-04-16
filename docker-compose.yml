@@ -49,6 +49,11 @@ services:
       - "traefik.http.routers.mediavault.entrypoints=websecure"
       - "traefik.http.routers.mediavault.tls.certresolver=letsencrypt"
       - "traefik.http.services.mediavault.loadbalancer.server.port=3001"
+      # Streaming: disable response buffering and extend timeouts
+      - "traefik.http.middlewares.mediavault-stream.buffering.maxResponseBodyBytes=0"
+      - "traefik.http.middlewares.mediavault-stream.buffering.retryExpression="
+      - "traefik.http.routers.mediavault.middlewares=mediavault-stream"
+      - "traefik.http.services.mediavault.loadbalancer.responseforwarding.flushinterval=100ms"
 
 volumes:
   mediavault-db:

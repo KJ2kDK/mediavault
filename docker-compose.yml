@@ -49,10 +49,10 @@ services:
       - "traefik.http.routers.mediavault.entrypoints=websecure"
       - "traefik.http.routers.mediavault.tls.certresolver=letsencrypt"
       - "traefik.http.services.mediavault.loadbalancer.server.port=3001"
-      # Streaming: disable response buffering and extend timeouts
-      - "traefik.http.middlewares.mediavault-stream.buffering.maxResponseBodyBytes=0"
-      - "traefik.http.middlewares.mediavault-stream.buffering.retryExpression="
-      - "traefik.http.routers.mediavault.middlewares=mediavault-stream"
+      # Streaming: flush proxy writes every 100ms so FFmpeg pipe output reaches
+      # the browser in real time. Do NOT add Traefik's "buffering" middleware —
+      # it buffers the full response before forwarding, which deadlocks a live
+      # fMP4 stream (0 bytes ever reach the client).
       - "traefik.http.services.mediavault.loadbalancer.responseforwarding.flushinterval=100ms"
 
 volumes:

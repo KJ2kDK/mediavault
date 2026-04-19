@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from 'react';
 import MediaCard from './MediaCard';
 
-export default function CarouselRow({ title, items, cardSize = 'md', onPlay, onMatched }) {
+export default function CarouselRow({ title, items, cardSize = 'md', onPlay, onMatched, isBookmarked, onBookmark }) {
   const scrollRef = useRef(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(true);
@@ -58,6 +58,8 @@ export default function CarouselRow({ title, items, cardSize = 'md', onPlay, onM
               size={cardSize}
               onPlay={onPlay}
               onMatched={onMatched}
+              isBookmarked={isBookmarked?.(item)}
+              onBookmark={onBookmark && item.backend === 'seedbox' ? onBookmark : undefined}
             />
           ))}
         </div>

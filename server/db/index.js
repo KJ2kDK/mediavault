@@ -60,6 +60,15 @@ db.exec(`
   );
 `);
 
+// Idempotent migration: add bookmarks.source to distinguish 'iptv' vs 'seedbox'.
+// Existing rows default to 'iptv' (backward compatible).
+{
+  const cols = db.prepare("PRAGMA table_info(bookmarks)").all();
+  if (!cols.some((c) => c.name === 'source')) {
+    db.exec("ALTER TABLE bookmarks ADD COLUMN source TEXT NOT NULL DEFAULT 'iptv'");
+  }
+}
+
 // ── IPTV channel cache ────────────────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS iptv_channels (

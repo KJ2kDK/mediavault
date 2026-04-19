@@ -53,6 +53,7 @@ export function useBookmarks(type) {
                     url: item.url ?? null,
                     year: item.year ?? null,
                     rating: item.rating ?? null,
+                    source: item.backend === 'seedbox' ? 'seedbox' : 'iptv',
                   }),
                 })
               ));
@@ -91,7 +92,8 @@ export function useBookmarks(type) {
       cache[type] = [
         { id: item.id, type, title: item.title ?? item.name, logo: item.logo ?? null, thumb: item.thumb ?? null,
           group_name: item.group ?? item.group_name ?? null, category_id: item.category_id ?? null,
-          url: item.url ?? null, year: item.year ?? null, rating: item.rating ?? null },
+          url: item.url ?? null, year: item.year ?? null, rating: item.rating ?? null,
+          source: item.backend === 'seedbox' ? 'seedbox' : 'iptv' },
         ...(cache[type] ?? []),
       ];
     }
@@ -115,6 +117,7 @@ export function useBookmarks(type) {
             url: item.url ?? null,
             year: item.year ?? null,
             rating: item.rating ?? null,
+            source: item.backend === 'seedbox' ? 'seedbox' : 'iptv',
           }),
         });
       }

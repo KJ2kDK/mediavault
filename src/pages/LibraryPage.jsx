@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useSeedboxLibrary } from '../hooks/useSeedbox';
+import { useBookmarks } from '../hooks/useBookmarks';
 import MediaCard from '../components/common/MediaCard';
 import CarouselRow from '../components/common/CarouselRow';
 import VideoPlayer from '../components/common/VideoPlayer';
@@ -27,10 +28,23 @@ const DEMO_ALL = [
 
 export default function LibraryPage({ searchQuery }) {
   const { library: seedboxLib, connected, refetch } = useSeedboxLibrary();
+  const vodBk = useBookmarks('vod');
+  const seriesBk = useBookmarks('series');
   const [activeFilter, setActiveFilter] = useState('All');
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
   const [sortBy, setSortBy] = useState('title'); // 'title' | 'year' | 'rating'
   const [playingItem, setPlayingItem] = useState(null);
+
+  const isBookmarked = (item) => {
+    if (item.backend !== 'seedbox') return false;
+    return item.type === 'show'
+      ? seriesBk.bookmarkedIds.has(item.id)
+      : vodBk.bookmarkedIds.has(item.id);
+  };
+  const toggleBookmark = (item) => {
+    if (item.backend !== 'seedbox') return;
+    (item.type === 'show' ? seriesBk : vodBk).toggle(item);
+  };
 
   // Dedupe by id from the seedbox library sections
   const merged = {};
@@ -124,7 +138,15 @@ export default function LibraryPage({ searchQuery }) {
       {viewMode === 'grid' ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4">
           {items.map((item) => (
-            <MediaCard key={item.id} item={item} size="md" onPlay={(i) => i.backend === 'seedbox' ? setPlayingItem(i) : null} onMatched={refetch} />
+            <MediaCard
+              key={item.id}
+              item={item}
+              size="md"
+              onPlay={(i) => i.backend === 'seedbox' ? setPlayingItem(i) : null}
+              onMatched={refetch}
+              isBookmarked={isBookmarked(item)}
+              onBookmark={item.backend === 'seedbox' ? toggleBookmark : undefined}
+            />
           ))}
         </div>
       ) : (

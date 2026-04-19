@@ -16,17 +16,20 @@ router.get('/bookmarks', (req, res) => {
 
 // POST /api/library/bookmarks  — add (idempotent)
 router.post('/bookmarks', (req, res) => {
-  const { id, type, title, logo, thumb, group_name, category_id, url, year, rating } = req.body;
+  const { id, type, title, logo, thumb, group_name, category_id, url, year, rating, source } = req.body;
   if (!id || !type || !title) return res.status(400).json({ error: 'id, type, title required' });
 
+  const src = source === 'seedbox' ? 'seedbox' : 'iptv';
+
   db.prepare(`
-    INSERT INTO bookmarks (id, type, title, logo, thumb, group_name, category_id, url, year, rating)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO bookmarks (id, type, title, logo, thumb, group_name, category_id, url, year, rating, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id, type) DO UPDATE SET
-      title = excluded.title,
-      logo  = excluded.logo,
-      thumb = excluded.thumb
-  `).run(id, type, title, logo ?? null, thumb ?? null, group_name ?? null, category_id ?? null, url ?? null, year ?? null, rating ?? null);
+      title  = excluded.title,
+      logo   = excluded.logo,
+      thumb  = excluded.thumb,
+      source = excluded.source
+  `).run(id, type, title, logo ?? null, thumb ?? null, group_name ?? null, category_id ?? null, url ?? null, year ?? null, rating ?? null, src);
 
   const rows = db.prepare('SELECT * FROM bookmarks WHERE type = ? ORDER BY added_at DESC').all(type);
   res.json({ bookmarks: rows });

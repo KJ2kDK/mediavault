@@ -45,8 +45,32 @@ const DEMO_ROWS = {
   ],
 };
 
+// ── Small badges + delete button shared by all three bookmark rows ──────────
+function SourceBadge({ source }) {
+  const isSb = source === 'seedbox';
+  return (
+    <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${isSb ? 'bg-vault-teal/20 text-vault-teal' : 'bg-vault-gold/20 text-vault-gold'}`}>
+      {isSb ? 'SEEDBOX' : 'IPTV'}
+    </span>
+  );
+}
+
+function DeleteBookmarkBtn({ onClick }) {
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className="absolute top-1.5 right-1.5 z-10 p-1 rounded-full bg-black/60 text-white/70 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-400/20 transition-all"
+      title="Remove bookmark"
+    >
+      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+      </svg>
+    </button>
+  );
+}
+
 function BookmarkedChannels({ onNavigate }) {
-  const { bookmarks } = useBookmarks('channel');
+  const { bookmarks, toggle } = useBookmarks('channel');
   if (bookmarks.length === 0) return null;
 
   return (
@@ -59,37 +83,48 @@ function BookmarkedChannels({ onNavigate }) {
       </div>
       <div className="flex gap-3 px-6 overflow-x-auto carousel-row pb-2">
         {bookmarks.map((ch) => (
-          <button
-            key={ch.id}
-            onClick={() => onNavigate('livetv', ch)}
-            className="shrink-0 w-36 flex flex-col items-center gap-2 p-3 rounded-xl bg-vault-surface border border-vault-border hover:border-vault-accent/50 hover:bg-vault-card transition-all group"
-          >
-            <div className="w-14 h-14 rounded-lg bg-vault-card flex items-center justify-center overflow-hidden">
-              {ch.logo ? (
-                <img src={ch.logo} alt="" className="w-12 h-12 object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
-              ) : (
-                <svg className="w-7 h-7 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-              )}
-            </div>
-            <div className="text-center min-w-0 w-full">
-              <p className="text-xs font-medium text-vault-text truncate">{ch.title ?? ch.name}</p>
-              <p className="text-[10px] text-vault-muted truncate">{ch.group_name}</p>
-            </div>
-            <span className="text-[9px] font-bold uppercase tracking-wider text-vault-accent opacity-0 group-hover:opacity-100 transition-opacity">
-              Watch →
-            </span>
-          </button>
+          <div key={ch.id} className="relative group shrink-0">
+            <DeleteBookmarkBtn onClick={() => toggle(ch)} />
+            <button
+              onClick={() => onNavigate('livetv', ch)}
+              className="w-36 flex flex-col items-center gap-2 p-3 rounded-xl bg-vault-surface border border-vault-border hover:border-vault-accent/50 hover:bg-vault-card transition-all"
+            >
+              <div className="w-14 h-14 rounded-lg bg-vault-card flex items-center justify-center overflow-hidden">
+                {ch.logo ? (
+                  <img src={ch.logo} alt="" className="w-12 h-12 object-contain" onError={(e) => { e.target.style.display = 'none'; }} />
+                ) : (
+                  <svg className="w-7 h-7 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                )}
+              </div>
+              <div className="text-center min-w-0 w-full">
+                <p className="text-xs font-medium text-vault-text truncate">{ch.title ?? ch.name}</p>
+                <p className="text-[10px] text-vault-muted truncate">{ch.group_name}</p>
+              </div>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-vault-accent opacity-0 group-hover:opacity-100 transition-opacity">
+                Watch →
+              </span>
+            </button>
+          </div>
         ))}
       </div>
     </div>
   );
 }
 
-function BookmarkedVod({ onNavigate }) {
-  const { bookmarks } = useBookmarks('vod');
+function BookmarkedVod({ onNavigate, onPlaySeedbox }) {
+  const { bookmarks, toggle } = useBookmarks('vod');
   if (bookmarks.length === 0) return null;
+
+  const handleClick = (item) => {
+    if (item.source === 'seedbox') {
+      // Re-tag with backend so VideoPlayer's fetch uses /api/seedbox/play/:id
+      onPlaySeedbox({ ...item, backend: 'seedbox' });
+    } else {
+      onNavigate('livetv-vod', item);
+    }
+  };
 
   return (
     <div className="mb-8">
@@ -101,36 +136,47 @@ function BookmarkedVod({ onNavigate }) {
       </div>
       <div className="flex gap-3 px-6 overflow-x-auto carousel-row pb-2">
         {bookmarks.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => onNavigate('livetv-vod', item)}
-            className="shrink-0 w-36 flex flex-col items-center gap-2 rounded-xl bg-vault-surface border border-vault-border hover:border-vault-teal/50 hover:bg-vault-card transition-all group overflow-hidden"
-          >
-            <div className="w-full h-48 bg-vault-card overflow-hidden">
-              {item.thumb ? (
-                <img src={item.thumb} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <svg className="w-10 h-10 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
-                  </svg>
-                </div>
-              )}
-            </div>
-            <div className="text-center min-w-0 w-full px-2 pb-2">
-              <p className="text-xs font-medium text-vault-text truncate">{item.title}</p>
-              <p className="text-[10px] text-vault-muted">{[item.year, item.rating && `★ ${item.rating}`].filter(Boolean).join(' · ')}</p>
-            </div>
-          </button>
+          <div key={`${item.source || 'iptv'}:${item.id}`} className="relative group shrink-0">
+            <DeleteBookmarkBtn onClick={() => toggle(item)} />
+            <button
+              onClick={() => handleClick(item)}
+              className="w-36 flex flex-col items-center gap-2 rounded-xl bg-vault-surface border border-vault-border hover:border-vault-teal/50 hover:bg-vault-card transition-all overflow-hidden"
+            >
+              <div className="w-full h-48 bg-vault-card overflow-hidden relative">
+                {item.thumb ? (
+                  <img src={item.thumb} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <svg className="w-10 h-10 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
+                    </svg>
+                  </div>
+                )}
+                <div className="absolute bottom-1.5 left-1.5"><SourceBadge source={item.source} /></div>
+              </div>
+              <div className="text-center min-w-0 w-full px-2 pb-2">
+                <p className="text-xs font-medium text-vault-text truncate">{item.title}</p>
+                <p className="text-[10px] text-vault-muted">{[item.year, item.rating && `★ ${item.rating}`].filter(Boolean).join(' · ')}</p>
+              </div>
+            </button>
+          </div>
         ))}
       </div>
     </div>
   );
 }
 
-function BookmarkedSeries({ onNavigate }) {
-  const { bookmarks } = useBookmarks('series');
+function BookmarkedSeries({ onNavigate, onPlaySeedbox }) {
+  const { bookmarks, toggle } = useBookmarks('series');
   if (bookmarks.length === 0) return null;
+
+  const handleClick = (item) => {
+    if (item.source === 'seedbox') {
+      onPlaySeedbox({ ...item, backend: 'seedbox' });
+    } else {
+      onNavigate('livetv-series', item);
+    }
+  };
 
   return (
     <div className="mb-8">
@@ -142,27 +188,30 @@ function BookmarkedSeries({ onNavigate }) {
       </div>
       <div className="flex gap-3 px-6 overflow-x-auto carousel-row pb-2">
         {bookmarks.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => onNavigate('livetv-series', item)}
-            className="shrink-0 w-36 flex flex-col items-center gap-2 rounded-xl bg-vault-surface border border-vault-border hover:border-purple-400/50 hover:bg-vault-card transition-all group overflow-hidden"
-          >
-            <div className="w-full h-48 bg-vault-card overflow-hidden">
-              {item.thumb ? (
-                <img src={item.thumb} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <svg className="w-10 h-10 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
+          <div key={`${item.source || 'iptv'}:${item.id}`} className="relative group shrink-0">
+            <DeleteBookmarkBtn onClick={() => toggle(item)} />
+            <button
+              onClick={() => handleClick(item)}
+              className="w-36 flex flex-col items-center gap-2 rounded-xl bg-vault-surface border border-vault-border hover:border-purple-400/50 hover:bg-vault-card transition-all overflow-hidden"
+            >
+              <div className="w-full h-48 bg-vault-card overflow-hidden relative">
+                {item.thumb ? (
+                  <img src={item.thumb} alt="" className="w-full h-full object-cover" onError={(e) => { e.target.style.display = 'none'; }} />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <svg className="w-10 h-10 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
                   </svg>
                 </div>
-              )}
-            </div>
-            <div className="text-center min-w-0 w-full px-2 pb-2">
-              <p className="text-xs font-medium text-vault-text truncate">{item.title}</p>
-              <p className="text-[10px] text-vault-muted">{[item.year, item.rating && `★ ${item.rating}`].filter(Boolean).join(' · ')}</p>
-            </div>
-          </button>
+                )}
+                <div className="absolute bottom-1.5 left-1.5"><SourceBadge source={item.source} /></div>
+              </div>
+              <div className="text-center min-w-0 w-full px-2 pb-2">
+                <p className="text-xs font-medium text-vault-text truncate">{item.title}</p>
+                <p className="text-[10px] text-vault-muted">{[item.year, item.rating && `★ ${item.rating}`].filter(Boolean).join(' · ')}</p>
+              </div>
+            </button>
+          </div>
         ))}
       </div>
     </div>
@@ -174,11 +223,27 @@ export default function HomePage({ searchQuery, onNavigate }) {
   const [refreshing, setRefreshing] = useState(false);
   const [playingItem, setPlayingItem] = useState(null);
 
+  const vodBk = useBookmarks('vod');
+  const seriesBk = useBookmarks('series');
+
   const rows = seedboxLib || {};
   const displayRows = connected && Object.keys(rows).length > 0 ? rows : DEMO_ROWS;
 
   const handlePlay = (item) => {
     if (item.backend === 'seedbox') setPlayingItem(item);
+  };
+
+  // Bookmark state lookup — movies go to 'vod', shows go to 'series'.
+  // Only active for seedbox items; IPTV items are bookmarked from the IPTV page.
+  const isBookmarked = (item) => {
+    if (item.backend !== 'seedbox') return false;
+    return item.type === 'show'
+      ? seriesBk.bookmarkedIds.has(item.id)
+      : vodBk.bookmarkedIds.has(item.id);
+  };
+  const toggleBookmark = (item) => {
+    if (item.backend !== 'seedbox') return;
+    (item.type === 'show' ? seriesBk : vodBk).toggle(item);
   };
 
   const handleRefresh = async () => {
@@ -216,11 +281,19 @@ export default function HomePage({ searchQuery, onNavigate }) {
       )}
 
       <BookmarkedChannels onNavigate={onNavigate} />
-      <BookmarkedVod onNavigate={onNavigate} />
-      <BookmarkedSeries onNavigate={onNavigate} />
+      <BookmarkedVod onNavigate={onNavigate} onPlaySeedbox={setPlayingItem} />
+      <BookmarkedSeries onNavigate={onNavigate} onPlaySeedbox={setPlayingItem} />
 
       {Object.entries(displayRows).map(([title, items]) => (
-        <CarouselRow key={title} title={title} items={items} onPlay={handlePlay} onMatched={refetch} />
+        <CarouselRow
+          key={title}
+          title={title}
+          items={items}
+          onPlay={handlePlay}
+          onMatched={refetch}
+          isBookmarked={isBookmarked}
+          onBookmark={toggleBookmark}
+        />
       ))}
 
       {playingItem && (

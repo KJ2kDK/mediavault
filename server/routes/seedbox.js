@@ -194,6 +194,34 @@ router.get('/library', async (req, res) => {
     // Format like the Plex library response: { "Section Name": [items] }
     const library = {};
 
+    // Continue Watching — items with saved progress that aren't ~finished.
+    // Sourced from watch_history (populated by VideoPlayer auto-save every 10s).
+    try {
+      const rows = db.prepare(`
+        SELECT item_id, progress, duration, watched_at
+        FROM watch_history
+        WHERE item_id LIKE 'seedbox:%'
+          AND progress > 30
+          AND (duration IS NULL OR duration = 0 OR progress < duration * 0.9)
+        ORDER BY watched_at DESC
+        LIMIT 20
+      `).all();
+
+      const continueItems = [];
+      for (const row of rows) {
+        const numId = Number(String(row.item_id).replace(/^seedbox:/, ''));
+        const item = mediaIndex.get(numId);
+        if (!item) continue; // item no longer in library (file moved/deleted)
+        continueItems.push(formatMediaItem(item));
+      }
+
+      if (continueItems.length > 0) {
+        library['Continue Watching'] = continueItems;
+      }
+    } catch (err) {
+      console.warn('[seedbox] continue-watching query failed:', err.message);
+    }
+
     // Movies section
     if (libraryCache.movies.length > 0) {
       library['Movies'] = libraryCache.movies

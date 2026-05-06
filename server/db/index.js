@@ -124,18 +124,35 @@ db.exec(`
   }
 
   if (collected.length > 0) {
-    const exists = db.prepare('SELECT id FROM rss_feeds WHERE url = ?');
+    const byUrl = db.prepare('SELECT id FROM rss_feeds WHERE url = ?');
+    const placeholderByName = db.prepare(
+      "SELECT id FROM rss_feeds WHERE name = ? AND url LIKE 'placeholder://%'"
+    );
+    const upgrade = db.prepare(
+      'UPDATE rss_feeds SET url = ?, cookie = COALESCE(?, cookie), enabled = 1 WHERE id = ?'
+    );
     const insert = db.prepare(
       'INSERT INTO rss_feeds (name, url, cookie, enabled, sort_order) VALUES (?, ?, ?, 1, ?)'
     );
     const maxOrder = () => db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS n FROM rss_feeds').get().n;
-    let added = 0;
+    let added = 0, upgraded = 0;
     for (const f of collected) {
-      if (exists.get(f.url)) continue;
-      insert.run(f.name, f.url, f.cookie, maxOrder() + 1);
-      added++;
+      if (byUrl.get(f.url)) continue;
+      // If a placeholder row exists for this feed name (from orphan
+      // recovery), upgrade it in place so cached articles keep their
+      // mapping instead of creating a duplicate row.
+      const placeholder = placeholderByName.get(f.name);
+      if (placeholder) {
+        upgrade.run(f.url, f.cookie, placeholder.id);
+        upgraded++;
+      } else {
+        insert.run(f.name, f.url, f.cookie, maxOrder() + 1);
+        added++;
+      }
     }
-    if (added > 0) console.log(`[db] Seeded ${added} RSS feed(s) from .env`);
+    if (added + upgraded > 0) {
+      console.log(`[db] RSS .env seeder: ${added} added, ${upgraded} upgraded from placeholder`);
+    }
   }
 }
 

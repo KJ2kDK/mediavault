@@ -13,6 +13,8 @@
     "dev:all": "concurrently \"npm run dev\" \"npm run server\""
   },
   "dependencies": {
+    "@capacitor/android": "^8.3.1",
+    "@capacitor/core": "^8.3.1",
     "axios": "^1.7.4",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.9.0",

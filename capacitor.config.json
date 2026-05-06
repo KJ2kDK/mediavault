@@ -1,0 +1,12 @@
+{
+  "appId": "cloud.baseinthe.mediavault",
+  "appName": "MediaVault",
+  "webDir": "dist",
+  "server": {
+    "url": "https://media.baseinthe.cloud",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

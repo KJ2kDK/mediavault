@@ -1,10 +1,52 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-/**
- * Seedbox video player — streams fMP4 chunks via MediaSource Extensions.
- * Backend: /api/seedbox/play/:id returns playback info + stream URL.
- */
+// When running inside the Capacitor (Android) shell, delegate playback to the
+// device's native player (MX Player / VLC / system default) via the
+// NativePlayer plugin. The device plays MKV/DTS natively — no transcode, no
+// seek lag. The web player below is bypassed entirely in that case.
+const isNativeShell =
+  typeof window !== 'undefined' &&
+  !!window.Capacitor &&
+  typeof window.Capacitor.isNativePlatform === 'function' &&
+  window.Capacitor.isNativePlatform();
+
+async function playNative(item) {
+  const token = localStorage.getItem('mediavault_token');
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(`/api/seedbox/play/${item.id}`, { headers });
+  if (!res.ok) throw new Error(`play endpoint: ${res.status}`);
+  const info = await res.json();
+
+  // Always ask the server for direct mode — the device's decoder handles
+  // whatever the file actually contains (MKV, DTS, TrueHD, HEVC, ...).
+  const base = info.streamUrl.replace(/([?&])mode=[^&]+/, '$1mode=direct');
+  const withMode = /mode=/.test(base) ? base : `${base}${base.includes('?') ? '&' : '?'}mode=direct`;
+  const streamUrl = token
+    ? `https://media.baseinthe.cloud${withMode}${withMode.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+    : `https://media.baseinthe.cloud${withMode}`;
+
+  const title = info.showTitle
+    ? `${info.showTitle} — ${info.episode || ''} — ${info.title}`
+    : info.title || item.title;
+
+  await window.Capacitor.Plugins.NativePlayer.play({ url: streamUrl, title });
+}
+
 export default function VideoPlayer({ item, onClose }) {
+  // Native shell: launch external player, then close the React overlay.
+  useEffect(() => {
+    if (!isNativeShell || !item) return;
+    playNative(item)
+      .catch((err) => console.error('[VideoPlayer] native launch failed:', err))
+      .finally(() => onClose?.());
+  }, [item, onClose]);
+
+  if (isNativeShell) return null;
+
+  return <WebVideoPlayer item={item} onClose={onClose} />;
+}
+
+function WebVideoPlayer({ item, onClose }) {
   const videoRef = useRef(null);
   const [playInfo, setPlayInfo] = useState(null);
   const [loading, setLoading] = useState(true);

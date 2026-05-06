@@ -69,6 +69,31 @@ db.exec(`
   }
 }
 
+// Server-side RSS feed list — replaces per-browser localStorage so feeds
+// sync across PC, Shield app, phone, etc.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS rss_feeds (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL,
+    url         TEXT    NOT NULL,
+    cookie      TEXT,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    added_at    INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_feeds_url ON rss_feeds(url);
+`);
+
+// Seed defaults on first boot (idempotent — only inserts if table is empty).
+{
+  const count = db.prepare('SELECT COUNT(*) AS n FROM rss_feeds').get().n;
+  if (count === 0) {
+    const seed = db.prepare('INSERT INTO rss_feeds (name, url, enabled, sort_order) VALUES (?, ?, 1, ?)');
+    seed.run('TorrentFreak', 'https://torrentfreak.com/feed/', 0);
+    seed.run('Ars Technica', 'https://feeds.arstechnica.com/arstechnica/index', 1);
+  }
+}
+
 // ── IPTV channel cache ────────────────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS iptv_channels (

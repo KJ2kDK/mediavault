@@ -584,4 +584,70 @@ function formatDate(dateStr) {
   }
 }
 
+// ── Server-side feed list ───────────────────────────────────────────────────
+// Replaces the per-browser localStorage list so feeds sync across devices.
+
+router.get('/feeds', (req, res) => {
+  const rows = db.prepare(
+    'SELECT id, name, url, cookie, enabled, sort_order FROM rss_feeds ORDER BY sort_order ASC, id ASC'
+  ).all();
+  // Normalise enabled to a real boolean for the frontend.
+  res.json({ feeds: rows.map((r) => ({ ...r, enabled: !!r.enabled })) });
+});
+
+router.post('/feeds', (req, res) => {
+  const { name, url, cookie, enabled = true } = req.body || {};
+  if (!name || !url) return res.status(400).json({ error: 'name and url are required' });
+  try {
+    const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS n FROM rss_feeds').get().n;
+    const result = db.prepare(
+      'INSERT INTO rss_feeds (name, url, cookie, enabled, sort_order) VALUES (?, ?, ?, ?, ?)'
+    ).run(name.trim(), url.trim(), cookie?.trim() || null, enabled ? 1 : 0, maxOrder + 1);
+    const row = db.prepare(
+      'SELECT id, name, url, cookie, enabled, sort_order FROM rss_feeds WHERE id = ?'
+    ).get(result.lastInsertRowid);
+    res.json({ feed: { ...row, enabled: !!row.enabled } });
+  } catch (err) {
+    if (String(err.message).includes('UNIQUE')) {
+      return res.status(409).json({ error: 'A feed with that URL already exists' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/feeds/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const { name, url, cookie, enabled, sort_order } = req.body || {};
+  const existing = db.prepare('SELECT * FROM rss_feeds WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'feed not found' });
+
+  const merged = {
+    name: name?.trim() ?? existing.name,
+    url: url?.trim() ?? existing.url,
+    cookie: cookie === undefined ? existing.cookie : (cookie?.trim() || null),
+    enabled: enabled === undefined ? existing.enabled : (enabled ? 1 : 0),
+    sort_order: sort_order ?? existing.sort_order,
+  };
+
+  try {
+    db.prepare(
+      'UPDATE rss_feeds SET name=?, url=?, cookie=?, enabled=?, sort_order=? WHERE id=?'
+    ).run(merged.name, merged.url, merged.cookie, merged.enabled, merged.sort_order, id);
+    const row = db.prepare(
+      'SELECT id, name, url, cookie, enabled, sort_order FROM rss_feeds WHERE id = ?'
+    ).get(id);
+    res.json({ feed: { ...row, enabled: !!row.enabled } });
+  } catch (err) {
+    if (String(err.message).includes('UNIQUE')) {
+      return res.status(409).json({ error: 'Another feed already uses that URL' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/feeds/:id', (req, res) => {
+  db.prepare('DELETE FROM rss_feeds WHERE id = ?').run(Number(req.params.id));
+  res.json({ ok: true });
+});
+
 export default router;

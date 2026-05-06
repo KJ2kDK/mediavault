@@ -94,6 +94,81 @@ db.exec(`
   }
 }
 
+// Permanent feed guarantee — runs every boot, idempotent.
+//
+// Reads RSS_FEEDS from .env and ensures each entry exists in the DB.
+// If a row with the same URL already exists, it's left alone (so the user
+// can rename / disable / move it through the UI). If the volume is ever
+// wiped or the user deletes a feed by accident, the next container start
+// recreates it from .env. Never source-controlled — the URLs contain
+// personal API keys / RSS passkeys.
+//
+// Format (one feed per line, '|' separators):
+//   RSS_FEEDS="Name|https://example.com/rss|optional-cookie\nName2|..."
+// Or use multiple env vars: RSS_FEED_1, RSS_FEED_2, ...
+{
+  const collected = [];
+  if (process.env.RSS_FEEDS) {
+    for (const line of process.env.RSS_FEEDS.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t) continue;
+      const [name, url, cookie] = t.split('|').map((s) => s?.trim() ?? '');
+      if (name && url) collected.push({ name, url, cookie: cookie || null });
+    }
+  }
+  for (let i = 1; ; i++) {
+    const v = process.env[`RSS_FEED_${i}`];
+    if (!v) break;
+    const [name, url, cookie] = v.split('|').map((s) => s?.trim() ?? '');
+    if (name && url) collected.push({ name, url, cookie: cookie || null });
+  }
+
+  if (collected.length > 0) {
+    const exists = db.prepare('SELECT id FROM rss_feeds WHERE url = ?');
+    const insert = db.prepare(
+      'INSERT INTO rss_feeds (name, url, cookie, enabled, sort_order) VALUES (?, ?, ?, 1, ?)'
+    );
+    const maxOrder = () => db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS n FROM rss_feeds').get().n;
+    let added = 0;
+    for (const f of collected) {
+      if (exists.get(f.url)) continue;
+      insert.run(f.name, f.url, f.cookie, maxOrder() + 1);
+      added++;
+    }
+    if (added > 0) console.log(`[db] Seeded ${added} RSS feed(s) from .env`);
+  }
+}
+
+// Recover orphan feeds: any feed_name that has cached rss_items but no
+// matching row in rss_feeds (typically because the user previously had
+// the feed in localStorage and we lost it during the volume-bug era).
+// Insert a disabled placeholder so the filter chip + cached articles are
+// visible again. The user can edit the row to add the real URL whenever
+// they want fresh fetches.
+{
+  const orphans = db.prepare(`
+    SELECT DISTINCT feed_name FROM rss_items
+    WHERE feed_name IS NOT NULL
+      AND feed_name NOT IN (SELECT name FROM rss_feeds)
+  `).all();
+
+  if (orphans.length > 0) {
+    const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS n FROM rss_feeds').get().n;
+    const insert = db.prepare(
+      'INSERT INTO rss_feeds (name, url, cookie, enabled, sort_order) VALUES (?, ?, NULL, 0, ?)'
+    );
+    let order = maxOrder + 1;
+    for (const { feed_name } of orphans) {
+      // Use a unique placeholder URL so the UNIQUE(url) index is happy.
+      // Refresh logic already skips disabled feeds, so this never fires
+      // a fetch — the user must edit the URL to enable real polling.
+      const placeholder = `placeholder://${encodeURIComponent(feed_name)}`;
+      insert.run(feed_name, placeholder, order++);
+    }
+    console.log(`[db] Recovered ${orphans.length} orphan RSS feed(s) from cached items`);
+  }
+}
+
 // ── IPTV channel cache ────────────────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS iptv_channels (

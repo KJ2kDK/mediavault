@@ -28,6 +28,10 @@ services:
       # Node 17+ defaults to verbatim DNS ordering which can flake on
       # IPv4-only IPTV hosts when the resolver returns AAAA first.
       - NODE_OPTIONS=--dns-result-order=ipv4first
+      # Keep the SQLite DB OUT of the source tree so the persistent volume
+      # below doesn't shadow server/db/index.js (the schema/migrations file)
+      # on every rebuild.
+      - MEDIAVAULT_DB_DIR=/app/data
 
     # Hard-coded fallback for the Xtream API host so a transient DNS
     # blip never kills a live stream. Update this IP if the provider
@@ -36,8 +40,9 @@ services:
       - "spliffstar.ottb.xyz:107.189.14.157"
 
     volumes:
-      # SQLite + subtitle cache persistence
-      - mediavault-db:/app/server/db
+      # SQLite + subtitle cache persistence (mounted at MEDIAVAULT_DB_DIR
+      # so it doesn't shadow server/db/index.js — the source file).
+      - mediavault-db:/app/data
       # Seedbox SSH key from the host (read-only). Mount point matches the
       # SEEDBOX_KEY_PATH value set in .env below.
       - /root/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro

@@ -9,6 +9,19 @@ function parseTitle(name) {
   return cut.replace(/\./g, ' ').trim();
 }
 
+// Build a TorrentLeech search URL for a given scene release name.
+// For TV: title + SxxExx — narrows to that exact episode.
+// For movies: title + year if present.
+// Otherwise: just the parsed title.
+function torrentLeechSearchUrl(rawName) {
+  const title = parseTitle(rawName);
+  if (!title) return null;
+  const ep = rawName?.match(/\bS\d{2}(?:E\d{1,3})?\b/i)?.[0];
+  const yr = !ep && rawName?.match(/\b(19\d{2}|20\d{2})\b/)?.[1];
+  const query = [title, ep, yr].filter(Boolean).join(' ');
+  return `https://www.torrentleech.org/torrents/browse/index/query/${encodeURIComponent(query)}`;
+}
+
 function mediaSearchLinks(name, media) {
   const title = parseTitle(name);
   if (!title) return [];
@@ -17,6 +30,8 @@ function mediaSearchLinks(name, media) {
   if (media?.url) links.push({ label: 'IMDB', url: media.url, color: 'text-yellow-500' });
   else links.push({ label: 'IMDB', url: `https://www.imdb.com/find/?q=${q}`, color: 'text-yellow-500' });
   links.push({ label: 'TMDB', url: `https://www.themoviedb.org/search?query=${q}`, color: 'text-sky-400' });
+  const tlUrl = torrentLeechSearchUrl(name);
+  if (tlUrl) links.push({ label: 'TL', url: tlUrl, color: 'text-orange-400' });
   links.push({ label: 'Trailer', url: `https://www.youtube.com/results?search_query=${q}+trailer`, color: 'text-red-400' });
   links.push({ label: 'Google', url: `https://www.google.com/search?q=${q}`, color: 'text-green-400' });
   return links;
@@ -770,6 +785,21 @@ export default function NewsPage({ navPayload, onClearNavPayload }) {
                           {article.meta?.uploader && (
                             <span className="text-[10px] text-vault-muted">by {article.meta.uploader}</span>
                           )}
+                          {(() => {
+                            const tlUrl = torrentLeechSearchUrl(article.title);
+                            return tlUrl ? (
+                              <a
+                                href={tlUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-400 hover:bg-orange-500/25 transition-colors"
+                                title="Search TorrentLeech for this title"
+                              >
+                                Search TL
+                              </a>
+                            ) : null;
+                          })()}
                           {article.link && (
                             <a
                               href={article.link}

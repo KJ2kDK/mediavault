@@ -178,30 +178,30 @@ router.post('/add-file', raw({ type: 'application/octet-stream', limit: '25mb' }
   }
 });
 
-// Pause torrent
+// qBittorrent 5.x renamed pause→stop and resume→start (the old paths 404).
+// Try the modern path first, fall back to the legacy one for older servers.
+async function qbitToggle(modernPath, legacyPath, hash) {
+  const body = `hashes=${hash}`;
+  const opts = { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body };
+  let r = await qbitFetch(modernPath, opts);
+  if (r.status === 404) r = await qbitFetch(legacyPath, opts);
+  return r;
+}
+
+// Pause torrent (v5: stop)
 router.post('/pause', async (req, res) => {
   try {
-    const { hash } = req.body;
-    await qbitFetch('/api/v2/torrents/pause', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `hashes=${hash}`,
-    });
+    await qbitToggle('/api/v2/torrents/stop', '/api/v2/torrents/pause', req.body.hash);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Resume torrent
+// Resume torrent (v5: start)
 router.post('/resume', async (req, res) => {
   try {
-    const { hash } = req.body;
-    await qbitFetch('/api/v2/torrents/resume', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `hashes=${hash}`,
-    });
+    await qbitToggle('/api/v2/torrents/start', '/api/v2/torrents/resume', req.body.hash);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

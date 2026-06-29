@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useConfig } from '../hooks/useConfig';
 
 const STATUS_COLORS = {
   downloading: 'text-vault-teal',
@@ -26,7 +25,6 @@ function formatSpeed(bytes) {
 }
 
 export default function DownloadsPage() {
-  const { config } = useConfig();
   const [torrents, setTorrents] = useState([]);
   const [showAddTorrent, setShowAddTorrent] = useState(false);
   const [magnetLink, setMagnetLink] = useState('');
@@ -74,10 +72,13 @@ export default function DownloadsPage() {
   const handleAddTorrent = async () => {
     if (!magnetLink) return;
     try {
+      // No savePath — let qBittorrent use its own configured default save path
+      // (mirrors the native Web UI). The old config default '/downloads' doesn't
+      // exist on the seedbox and pushed torrents into an error state.
       const res = await fetch('/api/qbit/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: magnetLink, savePath: config.qbittorrent.savePath }),
+        body: JSON.stringify({ url: magnetLink }),
       });
       if (res.ok) {
         setMagnetLink('');
@@ -100,8 +101,8 @@ export default function DownloadsPage() {
     let added = 0;
     for (const file of files) {
       try {
+        // No savepath — qBittorrent uses its own default (mirrors native Web UI).
         const params = new URLSearchParams({ filename: file.name });
-        if (config.qbittorrent.savePath) params.set('savepath', config.qbittorrent.savePath);
         const res = await fetch(`/api/qbit/add-file?${params}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/octet-stream' },

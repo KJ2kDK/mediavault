@@ -571,8 +571,11 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
         enableWorker: true,
         startLevel: 0,
         testBandwidth: false,
-        maxBufferLength: 8,
-        maxMaxBufferLength: 20,
+        // WAN headroom: absorb round-trip jitter when streaming through the
+        // remote proxy. Too small (e.g. 8s) starves the live buffer over the
+        // internet and causes constant "Buffering…".
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
         startFragPrefetch: true,
         lowLatencyMode: false,
         // Retry manifest/level loads on transient failures before giving up

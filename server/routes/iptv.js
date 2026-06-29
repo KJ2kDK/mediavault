@@ -564,14 +564,47 @@ router.get('/proxy', async (req, res) => {
       return res.send(rewritten);
     }
 
-    // Binary segment — log and buffer
+    // Binary segment — stream straight through so bytes reach the browser as
+    // they arrive instead of buffering the whole .ts in memory first. The
+    // round-trip latency over WAN (browser→Traefik→container→provider) made
+    // full-segment buffering starve the client's live buffer → constant
+    // "Buffering…". Traefik's responseforwarding.flushinterval=100ms forwards
+    // these chunks to the client in real time.
     console.log('[proxy] segment', upstream.status, url.slice(-60));
     if (!upstream.ok) {
       return res.status(upstream.status).end(`Upstream error: ${upstream.status}`);
     }
-    const buf = await upstream.arrayBuffer();
     res.setHeader('Content-Type', contentType || 'video/mp2t');
-    res.end(Buffer.from(buf));
+    const len = upstream.headers.get('content-length');
+    if (len) res.setHeader('Content-Length', len);
+
+    if (!upstream.body) { res.end(); return; }
+    const reader = upstream.body.getReader();
+    // Cancel the upstream read if the client goes away (e.g. channel switch),
+    // otherwise a backpressured write below can wait on a 'drain' that never
+    // fires and leak the upstream connection.
+    let clientGone = false;
+    res.on('close', () => { clientGone = true; reader.cancel().catch(() => {}); });
+    try {
+      while (true) {
+        if (clientGone) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        // Respect backpressure — wait for drain if the client socket is full,
+        // but bail immediately if the client disconnects mid-wait.
+        if (!res.write(Buffer.from(value))) {
+          await new Promise((resolve) => {
+            res.once('drain', resolve);
+            res.once('close', resolve);
+          });
+        }
+      }
+      if (!clientGone) res.end();
+    } catch (streamErr) {
+      reader.cancel().catch(() => {});
+      if (!res.headersSent) res.status(502).end(`Stream error: ${streamErr.message}`);
+      else res.end();
+    }
   } catch (err) {
     dbLog('error', 'iptv/proxy', err.message, { stack: err.stack, context: { url: url?.slice(-120) } });
     res.status(502).end(`Proxy error: ${err.message}`);

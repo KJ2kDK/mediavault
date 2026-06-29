@@ -33,6 +33,10 @@ export default function DownloadsPage() {
   const [filterStatus, setFilterStatus] = useState('all');
   const [connected, setConnected] = useState(null); // null = checking, true/false
   const [disk, setDisk] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState(null); // { type: 'error'|'ok', text }
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef(null);
   const pollRef = useRef(null);
 
   const fetchTorrents = useCallback(async () => {
@@ -81,6 +85,54 @@ export default function DownloadsPage() {
         fetchTorrents();
       }
     } catch { /* silent */ }
+  };
+
+  // Upload a local .torrent file to the seedbox's qBittorrent (mirrors the
+  // qBittorrent Web UI's file upload). Sends raw bytes; backend forwards them.
+  const uploadTorrentFiles = async (fileList) => {
+    const files = Array.from(fileList || []).filter((f) => f.name.toLowerCase().endsWith('.torrent'));
+    if (files.length === 0) {
+      setUploadMsg({ type: 'error', text: 'Please choose a .torrent file' });
+      return;
+    }
+    setUploading(true);
+    setUploadMsg(null);
+    let added = 0;
+    for (const file of files) {
+      try {
+        const params = new URLSearchParams({ filename: file.name });
+        if (config.qbittorrent.savePath) params.set('savepath', config.qbittorrent.savePath);
+        const res = await fetch(`/api/qbit/add-file?${params}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: file,
+        });
+        if (res.ok) added += 1;
+        else {
+          const data = await res.json().catch(() => ({}));
+          setUploadMsg({ type: 'error', text: data.error || `Failed to add ${file.name}` });
+        }
+      } catch {
+        setUploadMsg({ type: 'error', text: `Failed to upload ${file.name}` });
+      }
+    }
+    setUploading(false);
+    if (added > 0) {
+      setUploadMsg({ type: 'ok', text: `Added ${added} torrent${added > 1 ? 's' : ''}` });
+      fetchTorrents();
+      setTimeout(() => setUploadMsg(null), 4000);
+    }
+  };
+
+  const handleFileInput = (e) => {
+    uploadTorrentFiles(e.target.files);
+    e.target.value = ''; // allow re-selecting the same file
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragActive(false);
+    uploadTorrentFiles(e.dataTransfer.files);
   };
 
   const handleAction = async (hash, action) => {
@@ -163,17 +215,67 @@ export default function DownloadsPage() {
 
       {/* Add torrent form */}
       {showAddTorrent && (
-        <div className="mb-4 p-4 rounded-lg bg-vault-card border border-vault-border flex items-center gap-3">
-          <input
-            type="text"
-            placeholder="Paste magnet link or torrent URL..."
-            value={magnetLink}
-            onChange={(e) => setMagnetLink(e.target.value)}
-            className="flex-1 px-3 py-2 rounded-md bg-vault-bg border border-vault-border text-sm text-vault-text placeholder:text-vault-muted/60 focus:outline-none focus:border-vault-accent/50"
-          />
-          <button onClick={handleAddTorrent} className="px-4 py-2 rounded-md bg-vault-accent text-white text-xs font-medium hover:bg-vault-accentHover">
-            Download
-          </button>
+        <div className="mb-4 p-4 rounded-lg bg-vault-card border border-vault-border space-y-3">
+          {/* Magnet / URL row */}
+          <div className="flex items-center gap-3">
+            <input
+              type="text"
+              placeholder="Paste magnet link or torrent URL..."
+              value={magnetLink}
+              onChange={(e) => setMagnetLink(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleAddTorrent(); }}
+              className="flex-1 px-3 py-2 rounded-md bg-vault-bg border border-vault-border text-sm text-vault-text placeholder:text-vault-muted/60 focus:outline-none focus:border-vault-accent/50"
+            />
+            <button onClick={handleAddTorrent} className="px-4 py-2 rounded-md bg-vault-accent text-white text-xs font-medium hover:bg-vault-accentHover">
+              Download
+            </button>
+          </div>
+
+          {/* Divider */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-px bg-vault-border" />
+            <span className="text-[10px] uppercase tracking-widest text-vault-muted">or upload .torrent</span>
+            <div className="flex-1 h-px bg-vault-border" />
+          </div>
+
+          {/* Drag-and-drop / file picker */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+            onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={`rounded-md border border-dashed px-4 py-6 text-center cursor-pointer transition-colors ${
+              dragActive
+                ? 'border-vault-accent bg-vault-accent/10'
+                : 'border-vault-border hover:border-vault-muted bg-vault-bg/50'
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".torrent"
+              multiple
+              className="hidden"
+              onChange={handleFileInput}
+            />
+            {uploading ? (
+              <p className="text-xs text-vault-teal">Uploading…</p>
+            ) : (
+              <>
+                <svg className="w-6 h-6 mx-auto mb-1.5 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                </svg>
+                <p className="text-xs text-vault-text">Drop .torrent files here or <span className="text-vault-accent">browse</span></p>
+                <p className="text-[10px] text-vault-muted mt-0.5">Sent straight to your seedbox</p>
+              </>
+            )}
+          </div>
+
+          {uploadMsg && (
+            <p className={`text-xs ${uploadMsg.type === 'error' ? 'text-red-400' : 'text-green-400'}`}>
+              {uploadMsg.text}
+            </p>
+          )}
         </div>
       )}
 

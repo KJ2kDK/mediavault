@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, raw } from 'express';
 import fetch from 'node-fetch';
 
 const router = Router();
@@ -106,6 +106,59 @@ router.post('/add', async (req, res) => {
     });
 
     res.json({ success: result.ok });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add torrent from an uploaded .torrent file. The browser POSTs the raw file
+// bytes (application/octet-stream); we forward them to qBittorrent as the
+// multipart `torrents` field, exactly like its Web UI's file upload. Built
+// manually to avoid a multipart-parser dependency.
+router.post('/add-file', raw({ type: 'application/octet-stream', limit: '25mb' }), async (req, res) => {
+  try {
+    const fileBuf = req.body;
+    if (!Buffer.isBuffer(fileBuf) || fileBuf.length === 0) {
+      return res.status(400).json({ error: 'No torrent file received' });
+    }
+    // Basic sanity: .torrent files are bencoded dictionaries starting with 'd'.
+    if (fileBuf[0] !== 0x64 /* 'd' */) {
+      return res.status(400).json({ error: 'Not a valid .torrent file' });
+    }
+
+    const rawName = (req.query.filename || 'upload.torrent').toString();
+    const filename = rawName.replace(/["\r\n]/g, '').slice(0, 255);
+    const savePath = req.query.savepath ? req.query.savepath.toString() : '';
+
+    const boundary = `----MediaVault${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+    const parts = [
+      Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="torrents"; filename="${filename}"\r\n` +
+        `Content-Type: application/x-bittorrent\r\n\r\n`
+      ),
+      fileBuf,
+      Buffer.from('\r\n'),
+    ];
+    if (savePath) {
+      parts.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="savepath"\r\n\r\n${savePath}\r\n`
+      ));
+    }
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+    const body = Buffer.concat(parts);
+
+    const result = await qbitFetch('/api/v2/torrents/add', {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body,
+    });
+    const text = (await result.text()).trim();
+    // qBittorrent returns 'Ok.' on success, 'Fails.' on rejection.
+    if (!result.ok || /fail/i.test(text)) {
+      return res.status(400).json({ error: `qBittorrent rejected the file${text ? `: ${text}` : ''}` });
+    }
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

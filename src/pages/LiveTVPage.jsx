@@ -647,14 +647,24 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
   useEffect(() => {
     if (!navPayload) return;
 
-    // VOD bookmark navigation: payload.type === 'vod' (or _tab === 'vod') → play directly
+    // Plain sidebar deep-link to the Live tab (no channel url) → just switch tab.
+    if (navPayload._tab === 'live' && !navPayload.url) {
+      setActiveTab('live');
+      onClearNavPayload?.();
+      return;
+    }
+
+    // VOD navigation. A bookmark/play request carries a `url` → play it. A plain
+    // sidebar deep-link (VOD → Movies) has no url → just open the VOD tab.
     if (navPayload._tab === 'vod' || navPayload.type === 'vod') {
-      playVod(navPayload);
+      setActiveTab('vod');
+      if (navPayload.url) playVod(navPayload);
       onClearNavPayload?.();
       return;
     }
     if (navPayload._tab === 'series' || navPayload.type === 'series') {
       setActiveTab('series');
+      if (navPayload.url) playVod(navPayload);
       onClearNavPayload?.();
       return;
     }

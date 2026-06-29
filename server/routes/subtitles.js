@@ -2,10 +2,12 @@ import { Router } from 'express';
 import { gunzipSync } from 'zlib';
 import db from '../db/index.js';
 import { dbLog } from './logs.js';
+import { resilientFetch as fetch } from '../services/resilient-fetch.js';
 
-// Use Node's built-in fetch (undici). node-fetch v3 mangles DNS in this
-// container (resolves host as `_` → ENOTFOUND), same issue already documented
-// in routes/iptv.js. Global fetch resolves OpenSubtitles correctly.
+// Use the resilient DNS-fallback fetch. node-fetch v3 mangled the host (→ `_`)
+// and even global fetch hits intermittent ENOTFOUND for OpenSubtitles because
+// libc getaddrinfo is starved under the server's IPTV DNS load. resilientFetch
+// falls back to dns.resolve4, mirroring routes/iptv.js.
 
 const router = Router();
 

@@ -65,6 +65,9 @@ router.get('/search', async (req, res) => {
     if (season) url += `/season-${season}`;
     if (episode) url += `/episode-${episode}`;
     console.error('[subtitles/search] DEBUG url=', JSON.stringify(url), '| parsedHost=', (() => { try { return new URL(url).hostname; } catch (e) { return 'PARSE_ERR ' + e.message; } })());
+    // In-context A/B: same URL, two fetch impls, inside THIS request handler.
+    try { const a = await globalThis.fetch(url, { headers: { 'User-Agent': OS_UA } }); console.error('[subtitles/search] DEBUG globalFetch=', a.status); } catch (e) { console.error('[subtitles/search] DEBUG globalFetch ERR=', e.cause?.code, e.cause?.hostname); }
+    try { const b = await fetch(url, { headers: { 'User-Agent': OS_UA } }); console.error('[subtitles/search] DEBUG resilientFetch=', b.status); } catch (e) { console.error('[subtitles/search] DEBUG resilientFetch ERR=', e.cause?.code, e.cause?.hostname); }
 
     const apiRes = await fetch(url, { headers: { 'User-Agent': OS_UA } });
     if (!apiRes.ok) throw new Error(`OpenSubtitles API: ${apiRes.status}`);

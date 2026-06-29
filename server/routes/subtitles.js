@@ -29,28 +29,6 @@ async function fetchSubtitleText(downloadUrl) {
   return buf.toString('utf8');
 }
 
-// ── TEMP DIAGNOSTIC — remove after debugging ────────────────────────────────
-router.get('/_diag', async (_req, res) => {
-  const dnsMod = await import('node:dns');
-  const host = 'rest.opensubtitles.org';
-  const out = {};
-  // 1) default resolve4 (system / 127.0.0.11)
-  try { out.defaultResolve4 = await dnsMod.promises.resolve4(host); } catch (e) { out.defaultResolve4 = `ERR ${e.code || e.message}`; }
-  // 2) libc lookup
-  try { const l = await dnsMod.promises.lookup(host); out.libcLookup = l.address; } catch (e) { out.libcLookup = `ERR ${e.code || e.message}`; }
-  // 3) dedicated 1.1.1.1 resolver
-  try {
-    const r = new dnsMod.Resolver({ timeout: 5000, tries: 2 });
-    r.setServers(['1.1.1.1', '8.8.8.8']);
-    out.publicResolve4 = await new Promise((ok, no) => r.resolve4(host, (e, a) => e ? no(e) : ok(a)));
-  } catch (e) { out.publicResolve4 = `ERR ${e.code || e.message}`; }
-  // 4) raw global fetch (undici default dispatcher)
-  try { const rr = await globalThis.fetch(`https://${host}/search/query-test/sublanguageid-eng`, { headers: { 'User-Agent': OS_UA } }); out.globalFetch = rr.status; } catch (e) { out.globalFetch = `ERR ${e.message} / ${e.cause?.code || e.cause?.message || ''}`; }
-  // 5) resilientFetch (our wrapper)
-  try { const rr = await fetch(`https://${host}/search/query-test/sublanguageid-eng`, { headers: { 'User-Agent': OS_UA } }); out.resilientFetch = rr.status; } catch (e) { out.resilientFetch = `ERR ${e.message} / ${e.cause?.code || e.cause?.message || ''}`; }
-  res.json(out);
-});
-
 // ── GET /api/subtitles/search?query=title&season=1&episode=1&lang=en ─────────
 router.get('/search', async (req, res) => {
   try {
@@ -64,10 +42,6 @@ router.get('/search', async (req, res) => {
     let url = `${OS_API}/query-${encodeURIComponent(query)}/sublanguageid-${subLang}`;
     if (season) url += `/season-${season}`;
     if (episode) url += `/episode-${episode}`;
-    console.error('[subtitles/search] DEBUG url=', JSON.stringify(url), '| parsedHost=', (() => { try { return new URL(url).hostname; } catch (e) { return 'PARSE_ERR ' + e.message; } })());
-    // In-context A/B: same URL, two fetch impls, inside THIS request handler.
-    try { const a = await globalThis.fetch(url, { headers: { 'User-Agent': OS_UA } }); console.error('[subtitles/search] DEBUG globalFetch=', a.status); } catch (e) { console.error('[subtitles/search] DEBUG globalFetch ERR=', e.cause?.code, e.cause?.hostname); }
-    try { const b = await fetch(url, { headers: { 'User-Agent': OS_UA } }); console.error('[subtitles/search] DEBUG resilientFetch=', b.status); } catch (e) { console.error('[subtitles/search] DEBUG resilientFetch ERR=', e.cause?.code, e.cause?.hostname); }
 
     const apiRes = await fetch(url, { headers: { 'User-Agent': OS_UA } });
     if (!apiRes.ok) throw new Error(`OpenSubtitles API: ${apiRes.status}`);
@@ -86,9 +60,7 @@ router.get('/search', async (req, res) => {
 
     res.json({ subtitles: subs, total: subs.length });
   } catch (err) {
-    const cause = err.cause?.code || err.cause?.message || '';
-    console.error('[subtitles/search] FAIL url=', `${OS_API}/query-${encodeURIComponent(req.query.query)}/sublanguageid-...`,
-      '| msg=', err.message, '| cause.code=', err.cause?.code, '| cause.hostname=', err.cause?.hostname, '| cause.msg=', err.cause?.message);
+    const cause = err.cause?.code || err.code || '';
     dbLog('error', 'subtitles/search', err.message, { context: { cause } });
     res.status(500).json({ error: `${err.message}${cause ? ` (${cause})` : ''}` });
   }

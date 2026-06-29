@@ -33,13 +33,12 @@ services:
       # on every rebuild.
       - MEDIAVAULT_DB_DIR=/app/data
 
-    # Hard-coded fallback for the Xtream API host so a transient DNS
-    # blip never kills a live stream. Update this IP if the provider
-    # ever moves: `dig +short spliffstar.ottb.xyz` (do NOT trust a stale
-    # /etc/hosts pin — a dead IP here hangs every live stream → endless
-    # buffering). Last verified 2026-06-29.
-    extra_hosts:
-      - "spliffstar.ottb.xyz:46.229.243.219"
+    # NOTE: no extra_hosts pin for the Xtream host. A static /etc/hosts pin
+    # overrides DNS and never expires — when the provider moved servers it
+    # silently pointed every live stream at a dead IP (endless buffering).
+    # The server now self-heals via healthCheckProviderHosts(): it resolves
+    # the provider host through the DNS servers below, TCP-verifies a live IP
+    # on boot + every 10 min, and caches it. Nothing to hand-edit on a move.
 
     volumes:
       # SQLite + subtitle cache persistence (mounted at MEDIAVAULT_DB_DIR

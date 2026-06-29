@@ -487,6 +487,80 @@ const proxyAgent = new Agent({
   bodyTimeout: 30_000,
 });
 
+// ── Provider host self-healing health check ───────────────────────────────────
+// The Xtream provider occasionally moves servers. Previously we pinned the IP in
+// docker-compose `extra_hosts`, but a stale pin overrides DNS and never expires —
+// so when the provider moved, every live stream hung on connect → endless
+// buffering with no error. This check resolves the provider host via real DNS,
+// TCP-verifies a candidate is actually alive, and seeds the dnsCache with the
+// verified IP (long TTL). It runs on boot and on an interval, so a server move
+// self-heals within one cycle instead of requiring a manual IP edit + redeploy.
+import net from 'node:net';
+
+const PROVIDER_DNS_TTL = 15 * 60_000; // 15 min — refreshed by the periodic check
+
+function tcpAlive(ip, port = 80, timeout = 6000) {
+  return new Promise((resolve) => {
+    const sock = net.connect(port, ip);
+    sock.setTimeout(timeout);
+    sock.on('connect', () => { sock.destroy(); resolve(true); });
+    sock.on('timeout', () => { sock.destroy(); resolve(false); });
+    sock.on('error', () => resolve(false));
+  });
+}
+
+// Derive the live provider host(s) from the stored channel URLs so this tracks
+// whatever server the provider is currently on — no hardcoding.
+function providerHosts() {
+  try {
+    const rows = db.prepare("SELECT url FROM iptv_channels WHERE url LIKE 'http%' LIMIT 100").all();
+    const hosts = new Set();
+    for (const { url } of rows) {
+      try { hosts.add(new URL(url).hostname); } catch { /* skip malformed */ }
+    }
+    return [...hosts].filter((h) => !/^\d+\.\d+\.\d+\.\d+$/.test(h)); // skip IP literals
+  } catch {
+    return [];
+  }
+}
+
+export async function healthCheckProviderHosts() {
+  const hosts = providerHosts();
+  if (!hosts.length) return;
+  for (const host of hosts) {
+    // Resolve via authoritative DNS (bypasses /etc/hosts), fall back to libc.
+    let ips = [];
+    try { ips = await dns.resolve4(host); } catch { /* try libc next */ }
+    if (!ips.length) {
+      try {
+        const r = await dns.lookup(host, { all: true, family: 4 });
+        ips = r.map((a) => a.address);
+      } catch { /* none */ }
+    }
+    if (!ips.length) {
+      console.warn(`[iptv-health] ${host}: DNS returned no A records`);
+      dbLog('warn', 'iptv/health', `${host}: DNS returned no A records`);
+      continue;
+    }
+    // Pick the first IP that actually accepts a TCP connection on :80.
+    let liveIp = null;
+    for (const ip of ips) {
+      if (await tcpAlive(ip)) { liveIp = ip; break; }
+    }
+    if (liveIp) {
+      const prev = dnsCache.get(host)?.ip;
+      dnsCache.set(host, { ip: liveIp, expires: Date.now() + PROVIDER_DNS_TTL });
+      if (prev !== liveIp) {
+        console.log(`[iptv-health] ${host} → ${liveIp} (live${prev ? `, was ${prev}` : ''})`);
+      }
+    } else {
+      const msg = `${host}: NONE of [${ips.join(', ')}] reachable on :80 — provider may have moved`;
+      console.warn(`[iptv-health] ${msg}`);
+      dbLog('error', 'iptv/health', msg);
+    }
+  }
+}
+
 function isDnsError(err) {
   const code = err.cause?.code || err.code;
   const msg = err.cause?.message || err.message || '';

@@ -6,7 +6,7 @@ import { dirname, join } from 'path';
 import authRoutes from './routes/auth.js';
 import { requireAuth } from './middleware/auth.js';
 import qbitRoutes from './routes/qbittorrent.js';
-import iptvRoutes, { scheduledIptvSync } from './routes/iptv.js';
+import iptvRoutes, { scheduledIptvSync, healthCheckProviderHosts } from './routes/iptv.js';
 import rssRoutes from './routes/rss.js';
 import libraryRoutes from './routes/library.js';
 import epgRoutes from './routes/epg.js';
@@ -102,6 +102,14 @@ const server = app.listen(PORT, async () => {
 
   // ── Telegram bot ───────────────────────────────────────────────────────
   startTelegramBot().catch((e) => console.warn(`[telegram] Start failed: ${e.message}`));
+
+  // ── IPTV provider host health check (self-heals when provider moves) ────
+  // Resolves + TCP-verifies the live stream host on boot and every 10 min, so
+  // a server move can't silently hang every stream the way a stale IP pin did.
+  healthCheckProviderHosts().catch((e) => console.warn(`[iptv-health] boot check failed: ${e.message}`));
+  setInterval(() => {
+    healthCheckProviderHosts().catch((e) => console.warn(`[iptv-health] check failed: ${e.message}`));
+  }, 10 * 60 * 1000);
 
   // ── Initialize seedbox connection + auto-scan ──────────────────────────
   try {

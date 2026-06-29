@@ -154,9 +154,23 @@ router.post('/add-file', raw({ type: 'application/octet-stream', limit: '25mb' }
       body,
     });
     const text = (await result.text()).trim();
-    // qBittorrent returns 'Ok.' on success, 'Fails.' on rejection.
-    if (!result.ok || /fail/i.test(text)) {
-      return res.status(400).json({ error: `qBittorrent rejected the file${text ? `: ${text}` : ''}` });
+    // Success detection across qBittorrent versions:
+    //  - Newer builds return JSON: { success_count, failure_count, ... }
+    //  - Older builds return plain text: 'Ok.' / 'Fails.'
+    let ok = result.ok;
+    let detail = text;
+    try {
+      const json = JSON.parse(text);
+      if (typeof json.success_count === 'number') {
+        ok = ok && json.success_count > 0 && json.failure_count === 0;
+        detail = `${json.failure_count} failed`;
+      }
+    } catch {
+      // Plain-text response — 'Ok.' is success, anything matching 'fail' is not.
+      ok = ok && !/fail/i.test(text);
+    }
+    if (!ok) {
+      return res.status(400).json({ error: `qBittorrent rejected the file${detail ? `: ${detail}` : ''}` });
     }
     res.json({ success: true });
   } catch (err) {

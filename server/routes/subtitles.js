@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { gunzipSync } from 'zlib';
 import db from '../db/index.js';
+import { dbLog } from './logs.js';
 
 // Use Node's built-in fetch (undici). node-fetch v3 mangles DNS in this
 // container (resolves host as `_` → ENOTFOUND), same issue already documented
@@ -57,7 +58,9 @@ router.get('/search', async (req, res) => {
 
     res.json({ subtitles: subs, total: subs.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    const cause = err.cause?.code || err.cause?.message || '';
+    dbLog('error', 'subtitles/search', err.message, { context: { cause } });
+    res.status(500).json({ error: `${err.message}${cause ? ` (${cause})` : ''}` });
   }
 });
 

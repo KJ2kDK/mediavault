@@ -64,6 +64,7 @@ router.get('/search', async (req, res) => {
     let url = `${OS_API}/query-${encodeURIComponent(query)}/sublanguageid-${subLang}`;
     if (season) url += `/season-${season}`;
     if (episode) url += `/episode-${episode}`;
+    console.error('[subtitles/search] DEBUG url=', JSON.stringify(url), '| parsedHost=', (() => { try { return new URL(url).hostname; } catch (e) { return 'PARSE_ERR ' + e.message; } })());
 
     const apiRes = await fetch(url, { headers: { 'User-Agent': OS_UA } });
     if (!apiRes.ok) throw new Error(`OpenSubtitles API: ${apiRes.status}`);

@@ -240,12 +240,26 @@ router.get('/preload', (req, res) => {
       }
     }
 
+    // Return stored Xtream creds so any browser (config lives in localStorage,
+    // which is empty on a fresh device) can drive VOD/Series fetches the same
+    // way Live TV channels load from the server. Authenticated clients already
+    // send these in POST bodies, so this exposes nothing new.
+    let xtreamCreds = null;
+    const credsMeta = db.prepare("SELECT value FROM iptv_meta WHERE key='xtream_creds'").get();
+    if (credsMeta) {
+      try {
+        const c = JSON.parse(credsMeta.value);
+        if (c?.base) xtreamCreds = { base: c.base, user: c.user, pass: c.pass };
+      } catch { /* ignore malformed */ }
+    }
+
     res.json({
       channels: rows.map(rowToChannel),
       count: rows.length,
       last_sync_at: lastSyncAt,
       stale,
       sync: syncJob,
+      xtreamCreds,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

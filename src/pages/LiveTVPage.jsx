@@ -404,12 +404,39 @@ export default function LiveTVPage({ navPayload, onClearNavPayload }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Hydrate Xtream creds from the server when missing locally ──────────────
+  // Config (incl. creds) lives in localStorage, which is empty on a fresh
+  // browser/device. Live TV still works there because SplashScreen caches the
+  // synced channels, but VOD/Series need the creds. The server stores them
+  // (key 'xtream_creds') and returns them via /preload, so pull them down once
+  // so on-demand catalogues work on every device — same as Live TV.
+  useEffect(() => {
+    if (xtreamCreds.base) return; // already have them from config
+    fetch('/api/iptv/preload')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.xtreamCreds?.base) {
+          setXtreamCreds(data.xtreamCreds);
+          updateConfig('iptv', {
+            mode: 'xtream',
+            xtreamBase: data.xtreamCreds.base,
+            xtreamUser: data.xtreamCreds.user,
+            xtreamPass: data.xtreamCreds.pass,
+          });
+        }
+      })
+      .catch((err) => console.error('[LiveTV] creds hydrate failed:', err));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Fetch category lists when tab first opens ─────────────────────────────
   useEffect(() => {
     if (activeTab === 'vod' && vodCategories.length === 0 && xtreamCreds.base) fetchVodCategories();
     if (activeTab === 'series' && seriesCategories.length === 0 && xtreamCreds.base) fetchSeriesCategories();
+  // Re-run when creds arrive (hydrated from server after mount) so categories
+  // load even if the user already landed on the VOD/Series tab.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+  }, [activeTab, xtreamCreds.base]);
 
   // ── Derived: groups visible in Live tab ──────────────────────────────────
   const hiddenGroups = config.iptv.hiddenGroups ?? [];

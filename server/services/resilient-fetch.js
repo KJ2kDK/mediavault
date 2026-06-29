@@ -71,6 +71,7 @@ function doRequest(urlStr, opts, redirectsLeft) {
       const req = mod.request(reqOpts, (res) => {
         // Follow redirects (OpenSubtitles download links use them).
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
+          console.error('[resilient-fetch] REDIRECT', res.statusCode, 'from', urlStr, '-> location=', JSON.stringify(res.headers.location));
           res.resume();
           const next = new URL(res.headers.location, parsed).toString();
           return resolve(doRequest(next, opts, redirectsLeft - 1));

@@ -35,9 +35,11 @@ services:
 
     # Hard-coded fallback for the Xtream API host so a transient DNS
     # blip never kills a live stream. Update this IP if the provider
-    # ever moves: getent hosts spliffstar.ottb.xyz on the host.
+    # ever moves: `dig +short spliffstar.ottb.xyz` (do NOT trust a stale
+    # /etc/hosts pin — a dead IP here hangs every live stream → endless
+    # buffering). Last verified 2026-06-29.
     extra_hosts:
-      - "spliffstar.ottb.xyz:107.189.14.157"
+      - "spliffstar.ottb.xyz:46.229.243.219"
 
     volumes:
       # SQLite + subtitle cache persistence (mounted at MEDIAVAULT_DB_DIR

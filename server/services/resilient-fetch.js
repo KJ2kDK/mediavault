@@ -19,13 +19,16 @@ const dnsCache = new Map(); // hostname → { ip, expires }
 const DNS_TTL = 5 * 60_000;
 
 async function resolveHost(hostname) {
+  console.error('[resilient-fetch] resolveHost hostname=', JSON.stringify(hostname));
   if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return hostname; // already an IP
   const cached = dnsCache.get(hostname);
   if (cached && cached.expires > Date.now()) return cached.ip;
   let addrs;
   try {
     addrs = await resolver.resolve4(hostname);            // public DNS
-  } catch {
+    console.error('[resilient-fetch] resolve4 ok', hostname, addrs);
+  } catch (e1) {
+    console.error('[resilient-fetch] resolve4 FAIL', hostname, e1.code, '-> libc fallback');
     addrs = (await dnsModule.promises.lookup(hostname, { all: true, family: 4 })).map((a) => a.address); // libc fallback
   }
   if (!addrs?.length) throw Object.assign(new Error(`No A record for ${hostname}`), { code: 'ENOTFOUND' });

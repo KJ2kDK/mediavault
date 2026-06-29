@@ -509,25 +509,33 @@ function tcpAlive(ip, port = 80, timeout = 6000) {
   });
 }
 
-// Derive the live provider host(s) from the stored channel URLs so this tracks
-// whatever server the provider is currently on — no hardcoding.
+// Derive the live provider host(s) + port(s) from the stored channel URLs so
+// this tracks whatever server AND port the provider is currently on — no
+// hardcoding. Returns a deduped list of { host, port }.
 function providerHosts() {
   try {
     const rows = db.prepare("SELECT url FROM iptv_channels WHERE url LIKE 'http%' LIMIT 100").all();
-    const hosts = new Set();
+    const seen = new Map(); // host → port (first wins)
     for (const { url } of rows) {
-      try { hosts.add(new URL(url).hostname); } catch { /* skip malformed */ }
+      try {
+        const u = new URL(url);
+        if (/^\d+\.\d+\.\d+\.\d+$/.test(u.hostname)) continue; // skip IP literals
+        if (!seen.has(u.hostname)) {
+          const port = u.port ? Number(u.port) : (u.protocol === 'https:' ? 443 : 80);
+          seen.set(u.hostname, port);
+        }
+      } catch { /* skip malformed */ }
     }
-    return [...hosts].filter((h) => !/^\d+\.\d+\.\d+\.\d+$/.test(h)); // skip IP literals
+    return [...seen].map(([host, port]) => ({ host, port }));
   } catch {
     return [];
   }
 }
 
 export async function healthCheckProviderHosts() {
-  const hosts = providerHosts();
-  if (!hosts.length) return;
-  for (const host of hosts) {
+  const targets = providerHosts();
+  if (!targets.length) return;
+  for (const { host, port } of targets) {
     // Resolve via authoritative DNS (bypasses /etc/hosts), fall back to libc.
     let ips = [];
     try { ips = await dns.resolve4(host); } catch { /* try libc next */ }
@@ -542,19 +550,19 @@ export async function healthCheckProviderHosts() {
       dbLog('warn', 'iptv/health', `${host}: DNS returned no A records`);
       continue;
     }
-    // Pick the first IP that actually accepts a TCP connection on :80.
+    // Pick the first IP that actually accepts a TCP connection on the real port.
     let liveIp = null;
     for (const ip of ips) {
-      if (await tcpAlive(ip)) { liveIp = ip; break; }
+      if (await tcpAlive(ip, port)) { liveIp = ip; break; }
     }
     if (liveIp) {
       const prev = dnsCache.get(host)?.ip;
       dnsCache.set(host, { ip: liveIp, expires: Date.now() + PROVIDER_DNS_TTL });
       if (prev !== liveIp) {
-        console.log(`[iptv-health] ${host} → ${liveIp} (live${prev ? `, was ${prev}` : ''})`);
+        console.log(`[iptv-health] ${host} → ${liveIp}:${port} (live${prev ? `, was ${prev}` : ''})`);
       }
     } else {
-      const msg = `${host}: NONE of [${ips.join(', ')}] reachable on :80 — provider may have moved`;
+      const msg = `${host}: NONE of [${ips.join(', ')}] reachable on :${port} — provider may have moved`;
       console.warn(`[iptv-health] ${msg}`);
       dbLog('error', 'iptv/health', msg);
     }

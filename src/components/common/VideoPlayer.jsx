@@ -245,26 +245,73 @@ function WebVideoPlayer({ item, onClose }) {
         const reader = response.body.getReader();
         let firstAppend = true;
 
+        // Keep at most this many seconds buffered ahead of the playhead. Without
+        // this, the pump kept fetching + appending while paused until the
+        // SourceBuffer hit its quota → QuotaExceededError → "Stream interrupted".
+        // Holding off on reads also applies TCP backpressure to the server's
+        // FFmpeg pipe, so it throttles instead of buffering ahead forever.
+        const MAX_BUFFER_AHEAD = 30;
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const onUpdateEnd = () => new Promise(r => sourceBuffer.addEventListener('updateend', r, { once: true }));
+
+        const bufferedAhead = () => {
+          try {
+            const b = sourceBuffer.buffered;
+            if (!b.length) return 0;
+            return b.end(b.length - 1) - video.currentTime;
+          } catch { return 0; }
+        };
+
+        // Drop already-played data to free quota (keep a 10s trailing window).
+        const evictBehind = async () => {
+          try {
+            const b = sourceBuffer.buffered;
+            if (!b.length) return;
+            const start = b.start(0);
+            const safe = Math.max(start, video.currentTime - 10);
+            if (safe > start + 1) {
+              if (sourceBuffer.updating) await onUpdateEnd();
+              sourceBuffer.remove(start, safe);
+              await onUpdateEnd();
+            }
+          } catch { /* ignore */ }
+        };
+
+        const appendChunk = async (chunk) => {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              if (sourceBuffer.updating) await onUpdateEnd();
+              sourceBuffer.appendBuffer(chunk);
+              await onUpdateEnd();
+              return;
+            } catch (e) {
+              if (e.name === 'QuotaExceededError') { await evictBehind(); continue; }
+              throw e;
+            }
+          }
+        };
+
         const pump = async () => {
           while (true) {
+            if (abortController.signal.aborted) { reader.cancel(); return; }
+
+            // Backpressure: while we have plenty buffered ahead (e.g. the user
+            // paused), stop pulling from the network instead of overflowing.
+            while (!abortController.signal.aborted && bufferedAhead() > MAX_BUFFER_AHEAD) {
+              await sleep(500);
+            }
             if (abortController.signal.aborted) { reader.cancel(); return; }
 
             const { done, value } = await reader.read();
             if (done) {
               if (mediaSource.readyState === 'open') {
-                if (sourceBuffer.updating) {
-                  await new Promise(r => sourceBuffer.addEventListener('updateend', r, { once: true }));
-                }
+                if (sourceBuffer.updating) await onUpdateEnd();
                 mediaSource.endOfStream();
               }
               break;
             }
 
-            if (sourceBuffer.updating) {
-              await new Promise(r => sourceBuffer.addEventListener('updateend', r, { once: true }));
-            }
-            sourceBuffer.appendBuffer(value);
-            await new Promise(r => sourceBuffer.addEventListener('updateend', r, { once: true }));
+            await appendChunk(value);
 
             if (firstAppend) {
               firstAppend = false;

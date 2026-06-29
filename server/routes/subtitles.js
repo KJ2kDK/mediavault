@@ -1,15 +1,30 @@
 import { Router } from 'express';
-import fetch from 'node-fetch';
-import { createGunzip } from 'zlib';
-import { pipeline } from 'stream/promises';
-import { Writable } from 'stream';
+import { gunzipSync } from 'zlib';
 import db from '../db/index.js';
+
+// Use Node's built-in fetch (undici). node-fetch v3 mangles DNS in this
+// container (resolves host as `_` → ENOTFOUND), same issue already documented
+// in routes/iptv.js. Global fetch resolves OpenSubtitles correctly.
 
 const router = Router();
 
 // OpenSubtitles.org legacy REST API (free, no key needed)
 const OS_API = 'https://rest.opensubtitles.org/search';
 const OS_UA = 'MediaVault v1.0';
+
+// Fetch a (possibly gzipped) subtitle and return its decoded text. Global
+// fetch exposes the body as bytes via arrayBuffer(), so we gunzip in-memory
+// rather than piping a Node stream.
+async function fetchSubtitleText(downloadUrl) {
+  const subRes = await fetch(downloadUrl, { headers: { 'User-Agent': OS_UA } });
+  if (!subRes.ok) throw new Error(`Download failed: ${subRes.status}`);
+  const buf = Buffer.from(await subRes.arrayBuffer());
+  const contentType = subRes.headers.get('content-type') || '';
+  if (contentType.includes('gzip') || downloadUrl.endsWith('.gz')) {
+    return gunzipSync(buf).toString('utf8');
+  }
+  return buf.toString('utf8');
+}
 
 // ── GET /api/subtitles/search?query=title&season=1&episode=1&lang=en ─────────
 router.get('/search', async (req, res) => {
@@ -53,20 +68,7 @@ router.get('/download', async (req, res) => {
     const downloadUrl = dlUrl || (fileId ? `https://dl.opensubtitles.org/en/download/src-api/vrf-/filead/${fileId}.gz` : null);
     if (!downloadUrl) return res.status(400).json({ error: 'fileId or url required' });
 
-    const subRes = await fetch(downloadUrl, { headers: { 'User-Agent': OS_UA } });
-    if (!subRes.ok) throw new Error(`Download failed: ${subRes.status}`);
-
-    // Response is gzipped — decompress
-    let text;
-    const contentType = subRes.headers.get('content-type') || '';
-    if (contentType.includes('gzip') || downloadUrl.endsWith('.gz')) {
-      const chunks = [];
-      const collector = new Writable({ write(chunk, _enc, cb) { chunks.push(chunk); cb(); } });
-      await pipeline(subRes.body, createGunzip(), collector);
-      text = Buffer.concat(chunks).toString('utf8');
-    } else {
-      text = await subRes.text();
-    }
+    let text = await fetchSubtitleText(downloadUrl);
 
     // Convert SRT to WebVTT
     if (!text.startsWith('WEBVTT')) {
@@ -100,19 +102,7 @@ router.get('/translate', async (req, res) => {
 
     // Download the subtitle
     const downloadUrl = dlUrl || `https://dl.opensubtitles.org/en/download/src-api/vrf-/filead/${fileId}.gz`;
-    const subRes = await fetch(downloadUrl, { headers: { 'User-Agent': OS_UA } });
-    if (!subRes.ok) throw new Error(`Download failed: ${subRes.status}`);
-
-    let text;
-    const contentType = subRes.headers.get('content-type') || '';
-    if (contentType.includes('gzip') || downloadUrl.endsWith('.gz')) {
-      const chunks = [];
-      const collector = new Writable({ write(chunk, _enc, cb) { chunks.push(chunk); cb(); } });
-      await pipeline(subRes.body, createGunzip(), collector);
-      text = Buffer.concat(chunks).toString('utf8');
-    } else {
-      text = await subRes.text();
-    }
+    const text = await fetchSubtitleText(downloadUrl);
 
     // Parse SRT
     const entries = parseSrt(text);

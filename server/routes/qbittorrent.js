@@ -81,9 +81,15 @@ router.get('/list', async (req, res) => {
       peers: t.num_leechs,
       added: new Date(t.added_on * 1000).toLocaleString(),
       savePath: t.save_path,
+      category: t.category || '',
       ratio: Math.round((t.ratio || 0) * 100) / 100,
       rawDlSpeed: t.dlspeed || 0,
       rawUpSpeed: t.upspeed || 0,
+      // Raw numeric fields for client-side sorting
+      rawSize: t.size || 0,
+      rawAddedOn: t.added_on || 0,
+      rawProgress: t.progress || 0,
+      rawEta: t.eta || 0,
     }));
     res.json({ torrents: mapped });
   } catch (err) {

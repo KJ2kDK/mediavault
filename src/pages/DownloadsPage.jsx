@@ -29,6 +29,10 @@ export default function DownloadsPage() {
   const [showAddTorrent, setShowAddTorrent] = useState(false);
   const [magnetLink, setMagnetLink] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterCategory, setFilterCategory] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState('added'); // added | name | size | progress | ratio | speed
+  const [sortDir, setSortDir] = useState('desc'); // asc | desc
   const [connected, setConnected] = useState(null); // null = checking, true/false
   const [disk, setDisk] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -60,9 +64,30 @@ export default function DownloadsPage() {
     return () => clearInterval(pollRef.current);
   }, [fetchTorrents]);
 
-  const filtered = filterStatus === 'all'
-    ? torrents
-    : torrents.filter((t) => t.status === filterStatus);
+  // Distinct qBittorrent categories present in the current list (for the filter).
+  const categories = [...new Set(torrents.map((t) => t.category).filter(Boolean))].sort();
+
+  // Multi-criteria filter (status + category + search) then sort.
+  const SORT_KEYS = {
+    added: (t) => t.rawAddedOn || 0,
+    name: (t) => (t.name || '').toLowerCase(),
+    size: (t) => t.rawSize || 0,
+    progress: (t) => t.rawProgress || 0,
+    ratio: (t) => t.ratio || 0,
+    speed: (t) => t.rawDlSpeed || 0,
+  };
+  const visible = torrents
+    .filter((t) => filterStatus === 'all' || t.status === filterStatus)
+    .filter((t) => filterCategory === 'all' || t.category === filterCategory)
+    .filter((t) => !searchQuery || t.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    .sort((a, b) => {
+      const keyFn = SORT_KEYS[sortBy] || SORT_KEYS.added;
+      const av = keyFn(a), bv = keyFn(b);
+      let cmp;
+      if (typeof av === 'string') cmp = av.localeCompare(bv);
+      else cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
 
   const downloading = torrents.filter((t) => t.status === 'downloading').length;
   const completed = torrents.filter((t) => t.progress === 100).length;
@@ -214,6 +239,60 @@ export default function DownloadsPage() {
         </button>
       </div>
 
+      {/* Filter / sort row */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        {/* Search */}
+        <div className="relative flex-1 min-w-[180px]">
+          <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-vault-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+          </svg>
+          <input
+            type="text"
+            placeholder="Search torrents..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-vault-card border border-vault-border text-xs text-vault-text placeholder:text-vault-muted/60 focus:outline-none focus:border-vault-accent/50"
+          />
+        </div>
+
+        {/* Category filter — only when categories exist */}
+        {categories.length > 0 && (
+          <select
+            value={filterCategory}
+            onChange={(e) => setFilterCategory(e.target.value)}
+            className="px-3 py-1.5 rounded-lg text-xs bg-vault-card border border-vault-border text-vault-text focus:outline-none focus:border-vault-accent/50"
+            title="Filter by category"
+          >
+            <option value="all">All Categories</option>
+            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        )}
+
+        {/* Sort key */}
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="px-3 py-1.5 rounded-lg text-xs bg-vault-card border border-vault-border text-vault-text focus:outline-none focus:border-vault-accent/50"
+          title="Sort by"
+        >
+          <option value="added">Date Added</option>
+          <option value="name">Name</option>
+          <option value="size">Size</option>
+          <option value="progress">Progress</option>
+          <option value="ratio">Ratio</option>
+          <option value="speed">Download Speed</option>
+        </select>
+
+        {/* Sort direction */}
+        <button
+          onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
+          className="px-2.5 py-1.5 rounded-lg text-xs bg-vault-card border border-vault-border text-vault-muted hover:text-vault-text transition-colors"
+          title={sortDir === 'asc' ? 'Ascending' : 'Descending'}
+        >
+          {sortDir === 'asc' ? '↑ Asc' : '↓ Desc'}
+        </button>
+      </div>
+
       {/* Add torrent form */}
       {showAddTorrent && (
         <div className="mb-4 p-4 rounded-lg bg-vault-card border border-vault-border space-y-3">
@@ -302,8 +381,13 @@ export default function DownloadsPage() {
           No torrents. Send one from the News page or click + Add Torrent above.
         </div>
       )}
+      {connected && torrents.length > 0 && (
+        <p className="text-[10px] text-vault-muted mb-2">
+          Showing {visible.length} of {torrents.length} torrents
+        </p>
+      )}
       <div className="space-y-2">
-        {filtered.map((torrent) => (
+        {visible.map((torrent) => (
           <div key={torrent.id} className="p-4 rounded-lg bg-vault-surface border border-vault-border hover:border-vault-border/80 transition-colors">
             <div className="flex items-center gap-4">
               {/* Status icon */}

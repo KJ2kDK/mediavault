@@ -1,42 +1,44 @@
 // Resilient fetch for external APIs.
 //
-// In the production container, libc getaddrinfo (the default lookup undici's
-// global fetch uses) intermittently returns ENOTFOUND under sustained load —
-// the server does thousands of IPTV DNS lookups per minute, which starves the
-// libuv threadpool that getaddrinfo runs on. A fresh process resolves the same
-// host fine, so the failure is process/load-specific, not a real DNS outage.
+// Root problem: the container's resolv.conf points at Docker's embedded
+// resolver (127.0.0.11), which buckles under the server's IPTV DNS load
+// (thousands of lookups/min against ephemeral CDN hosts). Once it's saturated,
+// unrelated lookups like rest.opensubtitles.org fail with ENOTFOUND — even
+// though a fresh, idle process resolves them fine. libc getaddrinfo AND the
+// default dns.resolve4 both funnel through 127.0.0.11, so both fail under load.
 //
-// This wraps undici with an Agent whose lookup tries libc first, then falls
-// back to dns.resolve4 (c-ares, off the threadpool). undici sets the Host
-// header from the URL, so handing it an IP for the original hostname keeps the
-// correct Host/SNI automatically. routes/iptv.js uses the same approach for the
-// streaming proxy; this is the shared, reusable version.
+// Fix: resolve through a dedicated c-ares resolver pinned to public DNS
+// (1.1.1.1 / 8.8.8.8), bypassing 127.0.0.11 entirely, with a short cache and
+// retries. We hand undici the resolved IP via a custom Agent lookup; undici
+// still derives Host/SNI from the URL, so TLS stays correct.
 
-import dnsModule, { promises as dns } from 'node:dns';
+import dnsModule from 'node:dns';
 import { Agent, fetch as undiciFetch } from 'undici';
 
+// Dedicated resolver that talks straight to public DNS, NOT the Docker
+// embedded resolver that melts under IPTV load.
+const resolver = new dnsModule.promises.Resolver({ timeout: 5000, tries: 2 });
+resolver.setServers(['1.1.1.1', '1.0.0.1', '8.8.8.8']);
+
 const dnsCache = new Map(); // hostname → { ip, expires }
-const DNS_TTL = 60_000;
+const DNS_TTL = 5 * 60_000;
+
+async function resolveHost(hostname) {
+  const cached = dnsCache.get(hostname);
+  if (cached && cached.expires > Date.now()) return cached.ip;
+  const addrs = await resolver.resolve4(hostname);
+  if (!addrs.length) throw Object.assign(new Error(`No A record for ${hostname}`), { code: 'ENOTFOUND' });
+  const ip = addrs[0];
+  dnsCache.set(hostname, { ip, expires: Date.now() + DNS_TTL });
+  return ip;
+}
 
 // undici v6 calls lookup with { all: true }, expecting cb(err, [{address, family}, ...])
 function resolveLookup(hostname, _opts, cb) {
-  const cached = dnsCache.get(hostname);
-  if (cached && cached.expires > Date.now()) {
-    return cb(null, [{ address: cached.ip, family: 4 }]);
-  }
-
-  dnsModule.lookup(hostname, { family: 4, all: true }, (err, addresses) => {
-    if (!err && addresses?.length) {
-      dnsCache.set(hostname, { ip: addresses[0].address, expires: Date.now() + DNS_TTL });
-      return cb(null, addresses);
-    }
-    // Fallback to c-ares resolve4 (works when libc getaddrinfo is starved)
-    dns.resolve4(hostname).then((addrs) => {
-      if (!addrs.length) return cb(new Error(`No A record for ${hostname}`));
-      dnsCache.set(hostname, { ip: addrs[0], expires: Date.now() + DNS_TTL });
-      cb(null, addrs.map((a) => ({ address: a, family: 4 })));
-    }).catch(cb);
-  });
+  resolveHost(hostname)
+    .then((ip) => cb(null, [{ address: ip, family: 4 }]))
+    // Last-ditch: fall back to libc (works when public DNS is the thing failing)
+    .catch(() => dnsModule.lookup(hostname, { family: 4, all: true }, cb));
 }
 
 const resilientAgent = new Agent({
@@ -45,7 +47,28 @@ const resilientAgent = new Agent({
   bodyTimeout: 30_000,
 });
 
-// Drop-in fetch that routes through the resilient DNS agent.
-export function resilientFetch(url, opts = {}) {
-  return undiciFetch(url, { ...opts, dispatcher: resilientAgent });
+function isDnsError(err) {
+  const code = err.cause?.code || err.code;
+  return code === 'ENOTFOUND' || code === 'EAI_AGAIN';
+}
+
+// Drop-in fetch that resolves via public DNS and retries transient DNS/network
+// failures (the embedded-resolver flakiness is intermittent).
+export async function resilientFetch(url, opts = {}, retries = 4, delay = 250) {
+  let lastErr;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await undiciFetch(url, { ...opts, dispatcher: resilientAgent });
+    } catch (err) {
+      lastErr = err;
+      const code = err.cause?.code || err.code;
+      const transient = isDnsError(err) || code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT';
+      if (transient && attempt < retries) {
+        await new Promise((r) => setTimeout(r, delay * attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
 }

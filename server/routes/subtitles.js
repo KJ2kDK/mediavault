@@ -83,6 +83,8 @@ router.get('/search', async (req, res) => {
     res.json({ subtitles: subs, total: subs.length });
   } catch (err) {
     const cause = err.cause?.code || err.cause?.message || '';
+    console.error('[subtitles/search] FAIL url=', `${OS_API}/query-${encodeURIComponent(req.query.query)}/sublanguageid-...`,
+      '| msg=', err.message, '| cause.code=', err.cause?.code, '| cause.hostname=', err.cause?.hostname, '| cause.msg=', err.cause?.message);
     dbLog('error', 'subtitles/search', err.message, { context: { cause } });
     res.status(500).json({ error: `${err.message}${cause ? ` (${cause})` : ''}` });
   }

@@ -18,17 +18,20 @@ resolver.setServers(['1.1.1.1', '1.0.0.1', '8.8.8.8']);
 const dnsCache = new Map(); // hostname → { ip, expires }
 const DNS_TTL = 5 * 60_000;
 
+// A hostname is usable if it has a dot (domain) or is an IP. Junk like '_'
+// (OpenSubtitles' tarpit redirect host) is rejected.
+function isValidHost(h) {
+  return !!h && (h.includes('.') || /^\d+\.\d+\.\d+\.\d+$/.test(h));
+}
+
 async function resolveHost(hostname) {
-  console.error('[resilient-fetch] resolveHost hostname=', JSON.stringify(hostname));
   if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return hostname; // already an IP
   const cached = dnsCache.get(hostname);
   if (cached && cached.expires > Date.now()) return cached.ip;
   let addrs;
   try {
     addrs = await resolver.resolve4(hostname);            // public DNS
-    console.error('[resilient-fetch] resolve4 ok', hostname, addrs);
-  } catch (e1) {
-    console.error('[resilient-fetch] resolve4 FAIL', hostname, e1.code, '-> libc fallback');
+  } catch {
     addrs = (await dnsModule.promises.lookup(hostname, { all: true, family: 4 })).map((a) => a.address); // libc fallback
   }
   if (!addrs?.length) throw Object.assign(new Error(`No A record for ${hostname}`), { code: 'ENOTFOUND' });
@@ -71,10 +74,16 @@ function doRequest(urlStr, opts, redirectsLeft) {
       const req = mod.request(reqOpts, (res) => {
         // Follow redirects (OpenSubtitles download links use them).
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
-          console.error('[resilient-fetch] REDIRECT', res.statusCode, 'from', urlStr, '-> location=', JSON.stringify(res.headers.location));
           res.resume();
-          const next = new URL(res.headers.location, parsed).toString();
-          return resolve(doRequest(next, opts, redirectsLeft - 1));
+          const nextUrl = new URL(res.headers.location, parsed);
+          // OpenSubtitles' legacy REST 302-redirects to a normalized (lowercased)
+          // URL but with a junk host ('_'). If the redirect target has an invalid
+          // host, keep the original host and just follow the new path.
+          if (!isValidHost(nextUrl.hostname)) {
+            nextUrl.protocol = parsed.protocol;
+            nextUrl.host = parsed.host;
+          }
+          return resolve(doRequest(nextUrl.toString(), opts, redirectsLeft - 1));
         }
         const chunks = [];
         res.on('data', (c) => chunks.push(c));

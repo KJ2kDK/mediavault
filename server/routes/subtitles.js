@@ -39,7 +39,10 @@ router.get('/search', async (req, res) => {
     const langMap = { en:'eng', da:'dan', sv:'swe', no:'nor', de:'ger', fr:'fre', es:'spa', ja:'jpn', th:'tha', pt:'por', it:'ita', nl:'dut', fi:'fin', ko:'kor', zh:'chi', ar:'ara', ru:'rus' };
     const subLang = langMap[lang] || lang;
 
-    let url = `${OS_API}/query-${encodeURIComponent(query)}/sublanguageid-${subLang}`;
+    // Lowercase the query: OpenSubtitles' legacy REST 302-redirects mixed-case
+    // queries to a normalized lowercase URL (and its redirect host is broken),
+    // so normalize up front to get a direct 200.
+    let url = `${OS_API}/query-${encodeURIComponent(query.toLowerCase())}/sublanguageid-${subLang}`;
     if (season) url += `/season-${season}`;
     if (episode) url += `/episode-${episode}`;
 

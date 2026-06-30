@@ -20,6 +20,7 @@ import nordicbytesRoutes from './routes/nordicbytes.js';
 import seedboxRoutes, { startAutoScan, refreshLibrary as seedboxRefresh } from './routes/seedbox.js';
 import { startQbitWatcher } from './services/qbit-watcher.js';
 import adminRoutes from './routes/admin.js';
+import filesRoutes from './routes/files.js';
 import argonRoutes from './routes/argon.js';
 import { initPool as initSeedbox } from './services/seedbox.js';
 import { initWebSocket } from './services/ws-hub.js';
@@ -71,6 +72,7 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/nordicbytes', nordicbytesRoutes);
 app.use('/api/seedbox', seedboxRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/files', filesRoutes);
 app.use('/api/argon', argonRoutes);
 
 // ── Daily IPTV auto-refresh (checks every 30 min, syncs if > 23h old) ─────────

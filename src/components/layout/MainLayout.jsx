@@ -9,6 +9,7 @@ import NewsPage from '../../pages/NewsPage';
 import DownloadsPage from '../../pages/DownloadsPage';
 import SettingsPage from '../../pages/SettingsPage';
 import MissionControlPage from '../../pages/MissionControlPage';
+import FileManagerPage from '../../pages/FileManagerPage';
 import MediaDetailPage from '../../pages/MediaDetailPage';
 import ChatPanel from '../chat/ChatPanel';
 import VideoPlayer from '../common/VideoPlayer';
@@ -21,6 +22,7 @@ const PAGES = {
   downloads: DownloadsPage,
   settings: SettingsPage,
   'mission-control': MissionControlPage,
+  'file-manager': FileManagerPage,
   detail: MediaDetailPage,
 };
 
@@ -54,7 +56,7 @@ export default function MainLayout({ onLogout }) {
   // 'detail' is always allowed: it's only opened from an already-allowed page.
   useEffect(() => {
     if (!allowedViews) return;
-    if (section === 'mission-control') return; // role-gated separately
+    if (section === 'mission-control' || section === 'file-manager') return; // role-gated separately
     if (section === 'detail') return;
     if (!allowedViews.includes(section)) {
       setSection(allowedViews[0] || 'home');
@@ -126,7 +128,7 @@ export default function MainLayout({ onLogout }) {
   const isAllowedSection =
     section === 'detail'
       ? true
-      : section === 'mission-control'
+      : section === 'mission-control' || section === 'file-manager'
         ? userRole === 'admin'
         : !allowedViews || allowedViews.includes(section);
   const PageComponent = isAllowedSection ? (PAGES[section] || HomePage) : null;

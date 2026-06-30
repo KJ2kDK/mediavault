@@ -34,6 +34,9 @@ export default function LibraryPage({ searchQuery, onOpenDetail }) {
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
   const [sortBy, setSortBy] = useState('title'); // 'title' | 'year' | 'rating'
   const [playingItem, setPlayingItem] = useState(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [deleting, setDeleting] = useState(false);
 
   const isBookmarked = (item) => {
     if (item.backend !== 'seedbox') return false;
@@ -44,6 +47,52 @@ export default function LibraryPage({ searchQuery, onOpenDetail }) {
   const toggleBookmark = (item) => {
     if (item.backend !== 'seedbox') return;
     (item.type === 'show' ? seriesBk : vodBk).toggle(item);
+  };
+
+  const isSelectable = (item) => item.backend === 'seedbox' && item.type === 'movie';
+
+  const toggleSelect = (item) => {
+    if (!isSelectable(item)) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(item.id) ? next.delete(item.id) : next.add(item.id);
+      return next;
+    });
+  };
+
+  const exitSelect = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const deleteSelected = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    const ok = window.confirm(
+      `Permanently delete ${ids.length} item${ids.length > 1 ? 's' : ''} from the seedbox? This cannot be undone.`
+    );
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      const res = await fetch('/api/seedbox/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Delete failed (${res.status})`);
+      }
+      const data = await res.json();
+      const failed = data.total - data.deleted;
+      if (failed > 0) window.alert(`${data.deleted} deleted, ${failed} failed.`);
+      exitSelect();
+      await refetch();
+    } catch (e) {
+      window.alert(e.message);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   // Dedupe by id from the seedbox library sections
@@ -95,6 +144,35 @@ export default function LibraryPage({ searchQuery, onOpenDetail }) {
 
         {/* Controls */}
         <div className="flex items-center gap-3">
+          {/* Select / delete */}
+          {connected && (
+            selectMode ? (
+              <>
+                <button
+                  onClick={deleteSelected}
+                  disabled={selectedIds.size === 0 || deleting}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600 text-white hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  {deleting ? 'Deleting…' : `Delete${selectedIds.size ? ` (${selectedIds.size})` : ''}`}
+                </button>
+                <button
+                  onClick={exitSelect}
+                  disabled={deleting}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-vault-card text-vault-muted hover:text-vault-text border border-vault-border transition-colors"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setSelectMode(true)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-vault-card text-vault-muted hover:text-vault-text border border-vault-border transition-colors"
+              >
+                Select
+              </button>
+            )
+          )}
+
           {/* Sort */}
           <select
             value={sortBy}
@@ -130,8 +208,9 @@ export default function LibraryPage({ searchQuery, onOpenDetail }) {
 
       {/* Stats */}
       <p className="text-xs text-vault-muted mb-4">
-        {items.length} items {activeFilter !== 'All' && `in ${activeFilter}`}
-        {searchQuery && ` matching "${searchQuery}"`}
+        {selectMode
+          ? `${selectedIds.size} selected — tap items to choose what to delete`
+          : `${items.length} items ${activeFilter !== 'All' ? `in ${activeFilter}` : ''}${searchQuery ? ` matching "${searchQuery}"` : ''}`}
       </p>
 
       {/* Grid View */}
@@ -147,6 +226,9 @@ export default function LibraryPage({ searchQuery, onOpenDetail }) {
               onMatched={refetch}
               isBookmarked={isBookmarked(item)}
               onBookmark={item.backend === 'seedbox' ? toggleBookmark : undefined}
+              selectable={selectMode && isSelectable(item)}
+              selected={selectedIds.has(item.id)}
+              onToggleSelect={toggleSelect}
             />
           ))}
         </div>
@@ -156,10 +238,30 @@ export default function LibraryPage({ searchQuery, onOpenDetail }) {
           {items.map((item, i) => (
             <div
               key={item.id}
-              onClick={() => item.backend === 'seedbox' && onOpenDetail?.(item)}
-              className="flex items-center gap-4 px-4 py-3 rounded-lg hover:bg-vault-card transition-colors group cursor-pointer"
+              onClick={() => {
+                if (item.backend !== 'seedbox') return;
+                if (selectMode) { toggleSelect(item); return; }
+                onOpenDetail?.(item);
+              }}
+              className={`flex items-center gap-4 px-4 py-3 rounded-lg transition-colors group cursor-pointer ${
+                selectMode && selectedIds.has(item.id) ? 'bg-vault-accent/15' : 'hover:bg-vault-card'
+              }`}
             >
-              <span className="text-xs text-vault-muted w-6 text-right">{i + 1}</span>
+              {selectMode && isSelectable(item) ? (
+                <span
+                  className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                    selectedIds.has(item.id) ? 'bg-vault-accent border-vault-accent' : 'border-vault-muted'
+                  }`}
+                >
+                  {selectedIds.has(item.id) && (
+                    <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </span>
+              ) : (
+                <span className="text-xs text-vault-muted w-6 text-right">{i + 1}</span>
+              )}
               <div className={`w-10 h-14 rounded bg-gradient-to-br ${item.type === 'show' ? 'from-vault-teal/30 to-vault-teal/10' : 'from-vault-accent/30 to-vault-accent/10'} flex items-center justify-center shrink-0`}>
                 <svg className="w-4 h-4 text-white/40" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M8 5v14l11-7z" />

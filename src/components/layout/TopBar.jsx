@@ -1,10 +1,12 @@
 const SECTION_LABELS = {
   home: 'Home',
-  library: 'Library',
+  library: 'WhutBux?',
   livetv: 'Live TV',
   news: 'News',
   downloads: 'Downloads',
   settings: 'Settings',
+  'mission-control': 'Mission Control',
+  'file-manager': 'File Manager',
 };
 
 export default function TopBar({ section, searchQuery, onSearchChange }) {

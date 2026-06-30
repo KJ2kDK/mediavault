@@ -10,7 +10,7 @@ function authedUrl(url) {
   return `${url}${sep}token=${encodeURIComponent(token)}`;
 }
 
-export default function MediaCard({ item, size = 'md', onPlay, onOpen, onInfo, isBookmarked, onBookmark, onMatched }) {
+export default function MediaCard({ item, size = 'md', onPlay, onOpen, onInfo, isBookmarked, onBookmark, onMatched, selectable, selected, onToggleSelect }) {
   const [hovered, setHovered] = useState(false);
   const [imgError, setImgError] = useState(false);
   const [showMatch, setShowMatch] = useState(false);
@@ -38,10 +38,14 @@ export default function MediaCard({ item, size = 'md', onPlay, onOpen, onInfo, i
 
   return (
     <div
-      className={`${sizes[size]} relative rounded-xl overflow-hidden cursor-pointer media-card shrink-0 group ring-1 ring-white/5 hover:ring-2 hover:ring-vault-accent/60 hover:scale-[1.03] transition-all duration-200`}
+      className={`${sizes[size]} relative rounded-xl overflow-hidden cursor-pointer media-card shrink-0 group transition-all duration-200 ${
+        selectable && selected
+          ? 'ring-2 ring-vault-accent scale-[0.97]'
+          : 'ring-1 ring-white/5 hover:ring-2 hover:ring-vault-accent/60 hover:scale-[1.03]'
+      }`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={() => (onOpen ?? onPlay)?.(item)}
+      onClick={() => (selectable ? onToggleSelect?.(item) : (onOpen ?? onPlay)?.(item))}
     >
       {/* Background */}
       {item.thumb && !imgError ? (
@@ -91,8 +95,28 @@ export default function MediaCard({ item, size = 'md', onPlay, onOpen, onInfo, i
         )}
       </div>
 
+      {/* Selection overlay + checkbox */}
+      {selectable && (
+        <>
+          <div className={`absolute inset-0 transition-colors ${selected ? 'bg-vault-accent/25' : 'bg-black/0 group-hover:bg-black/20'}`} />
+          <div
+            className={`absolute top-2 left-2 w-6 h-6 rounded-full flex items-center justify-center border-2 transition-all ${
+              selected
+                ? 'bg-vault-accent border-vault-accent'
+                : 'bg-black/50 border-white/70'
+            }`}
+          >
+            {selected && (
+              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+          </div>
+        </>
+      )}
+
       {/* Hover play button — direct play (bypasses detail) */}
-      {hovered && (
+      {!selectable && hovered && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/30 transition-opacity">
           <button
             onClick={(e) => { e.stopPropagation(); onPlay?.(item); }}
@@ -107,7 +131,7 @@ export default function MediaCard({ item, size = 'md', onPlay, onOpen, onInfo, i
       )}
 
       {/* Type badge */}
-      {item.type && (
+      {item.type && !selectable && (
         <div className="absolute top-2 left-2">
           <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${item.type === 'show' ? 'bg-vault-teal/20 text-vault-teal' : 'bg-vault-accent/20 text-vault-accent'}`}>
             {item.type}
@@ -116,7 +140,7 @@ export default function MediaCard({ item, size = 'md', onPlay, onOpen, onInfo, i
       )}
 
       {/* Bookmark button */}
-      {onBookmark && (
+      {onBookmark && !selectable && (
         <button
           onClick={(e) => { e.stopPropagation(); onBookmark(item); }}
           className={`absolute top-2 right-2 p-1 rounded-full bg-black/50 transition-all ${
@@ -133,7 +157,7 @@ export default function MediaCard({ item, size = 'md', onPlay, onOpen, onInfo, i
       )}
 
       {/* Fix Match button (seedbox items only) */}
-      {isSeedbox && (
+      {isSeedbox && !selectable && (
         <button
           onClick={(e) => { e.stopPropagation(); setShowMatch(true); }}
           className={`absolute top-2 ${onBookmark ? 'right-9' : 'right-2'} p-1 rounded-full bg-black/50 text-white/70 opacity-0 group-hover:opacity-100 hover:text-vault-teal transition-all`}

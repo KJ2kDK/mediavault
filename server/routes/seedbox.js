@@ -149,6 +149,79 @@ router.delete('/tmdb/match/:itemId', (req, res) => {
   }
 });
 
+// ── POST /api/seedbox/delete — permanently delete media from the seedbox ────
+// Body: { ids: [<id>, ...] }  (also accepts { id })
+// For each id we delete the movie's own folder when the file lives in a
+// dedicated subdirectory of the media root, otherwise just the file itself.
+router.post('/delete', async (req, res) => {
+  const ids = Array.isArray(req.body?.ids)
+    ? req.body.ids
+    : (req.body?.id != null ? [req.body.id] : []);
+  if (ids.length === 0) return res.status(400).json({ error: 'ids required' });
+
+  const mediaPath = seedbox.getMediaPath();
+  const results = [];
+
+  for (const rawId of ids) {
+    const id = Number(rawId);
+    const item = mediaIndex.get(id);
+    if (!item) { results.push({ id, ok: false, error: 'Not found' }); continue; }
+
+    // Only movies are deletable — deleting a movie's folder is safe, but a TV
+    // episode shares its folder with the rest of the season pack.
+    if (item.mediaType !== 'movie') {
+      results.push({ id, ok: false, error: 'Refused: only movies can be deleted' });
+      continue;
+    }
+
+    const target = deletionTarget(item.path, mediaPath);
+    if (!target) { results.push({ id, ok: false, error: 'Refused: unsafe path' }); continue; }
+
+    try {
+      await seedbox.exec(`rm -rf -- "${shellEscape(target)}"`, { timeout: 60000 });
+      removeFromCache(id, item);
+      results.push({ id, ok: true, deleted: target });
+      console.log(`[seedbox] Deleted: ${target}`);
+    } catch (e) {
+      results.push({ id, ok: false, error: e.message });
+      console.warn(`[seedbox] Delete failed for ${target}: ${e.message}`);
+    }
+  }
+
+  const deleted = results.filter((r) => r.ok).length;
+  res.json({ deleted, total: ids.length, results });
+});
+
+/**
+ * Resolve what to `rm` for a media file, guarding against deleting the media
+ * root. Returns the movie's own top-level folder when the file is nested, or
+ * the file itself when it sits directly under the root. null = refuse.
+ */
+function deletionTarget(filePath, mediaPath) {
+  if (!filePath || !mediaPath) return null;
+  const root = mediaPath.replace(/\/+$/, '');
+  if (!filePath.startsWith(root + '/')) return null;
+  const rel = filePath.slice(root.length + 1);
+  const firstSeg = rel.split('/')[0];
+  if (!firstSeg) return null;
+  const target = rel.includes('/') ? `${root}/${firstSeg}` : filePath;
+  if (target.length <= root.length) return null; // never the root
+  return target;
+}
+
+/**
+ * Drop a deleted item from the in-memory index and library cache so it stops
+ * appearing immediately, before the next scan.
+ */
+function removeFromCache(id, item) {
+  mediaIndex.delete(id);
+  if (libraryCache?.movies) {
+    libraryCache.movies = libraryCache.movies.filter(
+      (m) => m.id !== id && m.path !== item.path
+    );
+  }
+}
+
 // ── GET /api/seedbox/status ─────────────────────────────────────────────────
 router.get('/status', (req, res) => {
   res.json({

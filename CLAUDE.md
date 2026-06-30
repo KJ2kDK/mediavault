@@ -34,7 +34,7 @@ from a seedbox over SSH. No Plex dependency.
 - Global `fetch` wrapper in `src/App.jsx` auto-attaches the JWT to `/api/*` calls.
 - Seedbox file ops go over SSH via `server/services/seedbox.js` (`exec`, `listDir`, etc.). Always confine paths to the media root.
 
-## Recent work (uncommitted as of this note)
+## Recent work (committed — `86462a5`, pushed to `origin/master`)
 - LibraryPage: multi-select + delete **movies** (`POST /api/seedbox/delete`).
 - Admin-only **File Manager**: `server/routes/files.js` (+ `/api/files` mount), `src/pages/FileManagerPage.jsx`, sidebar entry. Confined to media root.
 - Renamed "Library" menu label → **"WhutBux?"** (`Sidebar.jsx`, `TopBar.jsx`).

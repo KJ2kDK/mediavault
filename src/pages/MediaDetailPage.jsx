@@ -36,6 +36,14 @@ export default function MediaDetailPage({ selectedMedia, onPlay, onOpenDetail, g
 
   useEffect(() => {
     if (itemId == null) return;
+    // Only seedbox library items have a detail endpoint. Demo/placeholder items
+    // (e.g. the Home hero) render from their base fields without a fetch.
+    if (selectedMedia?.backend !== 'seedbox') {
+      setDetail(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);

@@ -10,7 +10,7 @@ function authedUrl(url) {
   return `${url}${sep}token=${encodeURIComponent(token)}`;
 }
 
-export default function MediaCard({ item, size = 'md', onPlay, onInfo, isBookmarked, onBookmark, onMatched }) {
+export default function MediaCard({ item, size = 'md', onPlay, onOpen, onInfo, isBookmarked, onBookmark, onMatched }) {
   const [hovered, setHovered] = useState(false);
   const [imgError, setImgError] = useState(false);
   const [showMatch, setShowMatch] = useState(false);
@@ -38,10 +38,10 @@ export default function MediaCard({ item, size = 'md', onPlay, onInfo, isBookmar
 
   return (
     <div
-      className={`${sizes[size]} relative rounded-lg overflow-hidden cursor-pointer media-card shrink-0 group`}
+      className={`${sizes[size]} relative rounded-xl overflow-hidden cursor-pointer media-card shrink-0 group ring-1 ring-white/5 hover:ring-2 hover:ring-vault-accent/60 hover:scale-[1.03] transition-all duration-200`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={() => onPlay?.(item)}
+      onClick={() => (onOpen ?? onPlay)?.(item)}
     >
       {/* Background */}
       {item.thumb && !imgError ? (
@@ -91,14 +91,18 @@ export default function MediaCard({ item, size = 'md', onPlay, onInfo, isBookmar
         )}
       </div>
 
-      {/* Hover play button */}
+      {/* Hover play button — direct play (bypasses detail) */}
       {hovered && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/30 transition-opacity">
-          <div className="w-12 h-12 rounded-full bg-vault-accent/90 flex items-center justify-center shadow-lg shadow-vault-accent/30 hover:scale-110 transition-transform">
+          <button
+            onClick={(e) => { e.stopPropagation(); onPlay?.(item); }}
+            className="w-12 h-12 rounded-full bg-vault-accent/90 flex items-center justify-center shadow-lg shadow-vault-accent/30 hover:scale-110 transition-transform"
+            title="Play"
+          >
             <svg className="w-5 h-5 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24">
               <path d="M8 5v14l11-7z" />
             </svg>
-          </div>
+          </button>
         </div>
       )}
 

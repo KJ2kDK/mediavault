@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './Sidebar';
 import useWebSocket from '../../hooks/useWebSocket';
 import TopBar from './TopBar';
@@ -9,6 +9,7 @@ import NewsPage from '../../pages/NewsPage';
 import DownloadsPage from '../../pages/DownloadsPage';
 import SettingsPage from '../../pages/SettingsPage';
 import MissionControlPage from '../../pages/MissionControlPage';
+import MediaDetailPage from '../../pages/MediaDetailPage';
 import ChatPanel from '../chat/ChatPanel';
 import VideoPlayer from '../common/VideoPlayer';
 
@@ -20,6 +21,7 @@ const PAGES = {
   downloads: DownloadsPage,
   settings: SettingsPage,
   'mission-control': MissionControlPage,
+  detail: MediaDetailPage,
 };
 
 export default function MainLayout({ onLogout }) {
@@ -31,6 +33,8 @@ export default function MainLayout({ onLogout }) {
   const [allowedViews, setAllowedViews] = useState(null); // null = loading / all
   const [seedboxReadonly, setSeedboxReadonly] = useState(false);
   const [remotePlayItem, setRemotePlayItem] = useState(null);
+  const [selectedMedia, setSelectedMedia] = useState(null);
+  const prevSection = useRef('home');
 
   // Fetch role + view permissions on mount (manually attach token — global
   // wrapper skips /api/auth/). allowedViews gates both the sidebar and pages.
@@ -54,6 +58,28 @@ export default function MainLayout({ onLogout }) {
       setSection(allowedViews[0] || 'home');
     }
   }, [allowedViews, section]);
+
+  // Open the cinematic detail page for a library item, remembering where we
+  // came from so the detail page's Back button can return there.
+  const handleOpenDetail = (item) => {
+    if (!item) return;
+    prevSection.current = section === 'detail' ? prevSection.current : section;
+    setSelectedMedia(item);
+    setSection('detail');
+  };
+
+  const goBack = () => setSection(prevSection.current || 'home');
+
+  // Shared playback entry point so detail page and pages use one VideoPlayer.
+  const playSeedboxItem = (item) => {
+    if (!item) return;
+    setRemotePlayItem({
+      id: item.id,
+      title: item.title || 'Playing',
+      backend: 'seedbox',
+      resumeAt: item.resumeAt || 0,
+    });
+  };
 
   // onNavigate(section, payload?) — payload is passed to the target page once.
   const handleNavigate = (newSection, payload = null) => {
@@ -94,10 +120,13 @@ export default function MainLayout({ onLogout }) {
 
   // Gate page rendering: a user can only render an allowed view (mission-control
   // stays role-gated). Prevents access via stale state or direct navigation.
+  // 'detail' is always reachable: it's only opened from an already-allowed page.
   const isAllowedSection =
-    section === 'mission-control'
-      ? userRole === 'admin'
-      : !allowedViews || allowedViews.includes(section);
+    section === 'detail'
+      ? true
+      : section === 'mission-control'
+        ? userRole === 'admin'
+        : !allowedViews || allowedViews.includes(section);
   const PageComponent = isAllowedSection ? (PAGES[section] || HomePage) : null;
 
   return (
@@ -125,6 +154,10 @@ export default function MainLayout({ onLogout }) {
               navPayload={navPayload}
               onClearNavPayload={() => setNavPayload(null)}
               seedboxReadonly={seedboxReadonly}
+              onOpenDetail={handleOpenDetail}
+              onPlay={playSeedboxItem}
+              selectedMedia={selectedMedia}
+              goBack={goBack}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-6">

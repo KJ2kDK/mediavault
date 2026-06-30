@@ -288,6 +288,115 @@ router.get('/library', async (req, res) => {
 });
 
 // ── GET /api/seedbox/search?q=... ───────────────────────────────────────────
+router.get('/detail/:id', async (req, res) => {
+  try {
+    // Warm a cold library cache so series lookups have show data.
+    if (!libraryCache && seedbox.isConnected()) {
+      await refreshLibrary();
+    }
+
+    const id = Number(req.params.id);
+    const item = mediaIndex.get(id);
+    if (!item) return res.status(404).json({ error: 'Media not found' });
+
+    const base = formatMediaItem(item);
+    const tmdbType = item.mediaType === 'episode' ? 'tv' : 'movie';
+
+    let trailer = null;
+    let runtime = null;
+    let cast = [];
+    let recommendations = [];
+    if (item.tmdbId && tmdb.isEnabled()) {
+      try {
+        const extras = await tmdb.getExtras(item.tmdbId, tmdbType);
+        trailer = extras.trailer;
+        runtime = extras.runtime;
+        cast = extras.cast;
+        recommendations = extras.recommendations;
+      } catch (e) {
+        console.warn('[seedbox] detail extras failed:', e.message);
+      }
+    }
+
+    // Map TMDB recommendations onto library items when present (so they're
+    // playable); otherwise keep them as poster-only, non-playable tiles.
+    const libByTmdb = new Map();
+    for (const other of mediaIndex.values()) {
+      if (other.tmdbId && !libByTmdb.has(other.tmdbId)) {
+        libByTmdb.set(other.tmdbId, other);
+      }
+    }
+    recommendations = recommendations.map((rec) => {
+      const match = libByTmdb.get(rec.tmdbId);
+      if (match) {
+        return { ...formatMediaItem(match), backend: 'seedbox', tmdbId: rec.tmdbId, inLibrary: true };
+      }
+      return {
+        id: `tmdb:${rec.tmdbId}`,
+        title: rec.title,
+        year: rec.year,
+        thumb: rec.poster,
+        backdrop: rec.backdrop,
+        type: rec.type === 'tv' ? 'show' : 'movie',
+        tmdbId: rec.tmdbId,
+        inLibrary: false,
+      };
+    });
+
+    // Series: build season/episode list from the show cache.
+    let seasons = null;
+    if (item.showTitle && libraryCache?.shows?.[item.showTitle]) {
+      const show = libraryCache.shows[item.showTitle];
+      seasons = Object.entries(show.seasons)
+        .map(([season, episodes]) => ({
+          season: Number(season),
+          episodes: [...episodes]
+            .sort((a, b) => (a.episode || 0) - (b.episode || 0))
+            .map((ep) => {
+              const prog = getProgressForItem(ep.id);
+              return {
+                id: ep.id,
+                episode: ep.episode ?? null,
+                title: ep.title || ep.filename || `Episode ${ep.episode ?? ''}`.trim(),
+                progress: prog?.progress ?? 0,
+                duration: prog?.duration ?? ep.duration ?? null,
+              };
+            }),
+        }))
+        .sort((a, b) => a.season - b.season);
+
+      // Mark the resume / first-unwatched episode across all seasons.
+      let resumeMarked = false;
+      for (const s of seasons) {
+        for (const ep of s.episodes) {
+          const unfinished =
+            ep.progress > 30 && (!ep.duration || ep.progress < ep.duration * 0.9);
+          if (!resumeMarked && (unfinished || ep.progress === 0)) {
+            ep.resume = true;
+            resumeMarked = true;
+          }
+        }
+      }
+    }
+
+    const progress = getProgressForItem(item.id);
+
+    res.json({
+      ...base,
+      tmdbType,
+      trailer,
+      runtime,
+      cast,
+      recommendations,
+      seasons,
+      resumeAt: progress?.progress || 0,
+    });
+  } catch (err) {
+    console.error('[seedbox] detail error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/search', async (req, res) => {
   try {
     const { q } = req.query;
@@ -694,6 +803,8 @@ function formatMediaItem(item) {
     year: item.tmdbYear || item.year || null,
     rating: item.tmdbRating ?? null,
     type: item.mediaType === 'episode' ? 'show' : (item.mediaType || 'movie'),
+    tmdbId: item.tmdbId ?? null,
+    tmdbType: item.mediaType === 'episode' ? 'tv' : 'movie',
     genre: item.tmdbGenres || '',
     thumb: item.tmdbPoster || null,
     backdrop: item.tmdbBackdrop || null,

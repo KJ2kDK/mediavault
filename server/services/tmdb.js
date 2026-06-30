@@ -247,4 +247,75 @@ export async function lookupById(tmdbId, type) {
   }
 }
 
-export default { isEnabled, lookupMovie, lookupShow, searchRaw, lookupById };
+// ── Extras (trailer / runtime / cast / recommendations) ──────────────────
+const EXTRAS_TTL = 6 * 3600 * 1000; // 6h in ms
+const extrasCache = new Map(); // `type:id` → { at, data }
+
+function pickTrailer(videos) {
+  const results = (videos?.results || []).filter(
+    (v) => v.site === 'YouTube' && v.key
+  );
+  if (!results.length) return null;
+  const official = results.find((v) => v.type === 'Trailer' && v.official);
+  if (official) return official.key;
+  const trailer = results.find((v) => v.type === 'Trailer');
+  if (trailer) return trailer.key;
+  const teaser = results.find((v) => v.type === 'Teaser');
+  if (teaser) return teaser.key;
+  return results[0].key;
+}
+
+/**
+ * Fetch extended detail for a TMDB item: best YouTube trailer key, runtime,
+ * top cast, and recommendations. No-op (returns nulls) when no API key.
+ * Best-effort — returns empty data on failure rather than throwing.
+ */
+export async function getExtras(tmdbId, type) {
+  const empty = { trailer: null, runtime: null, cast: [], recommendations: [] };
+  if (!API_KEY || !tmdbId) return empty;
+
+  const cacheKey = `${type}:${tmdbId}`;
+  const hit = extrasCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < EXTRAS_TTL) return hit.data;
+
+  try {
+    const endpoint = type === 'tv' ? `/tv/${tmdbId}` : `/movie/${tmdbId}`;
+    const full = await tmdbFetch(endpoint, {
+      append_to_response: 'videos,credits,recommendations',
+    });
+
+    const runtime =
+      type === 'tv'
+        ? (Array.isArray(full.episode_run_time) ? full.episode_run_time[0] : null) ?? null
+        : full.runtime ?? null;
+
+    const cast = (full.credits?.cast || []).slice(0, 12).map((c) => ({
+      name: c.name,
+      character: c.character || null,
+      profile: c.profile_path ? `${IMG}/w185${c.profile_path}` : null,
+    }));
+
+    const recommendations = (full.recommendations?.results || [])
+      .slice(0, 18)
+      .map((r) => {
+        const date = r.release_date || r.first_air_date || '';
+        return {
+          tmdbId: r.id,
+          type: r.media_type || type,
+          title: r.title || r.name,
+          year: date ? parseInt(date.slice(0, 4), 10) : null,
+          poster: r.poster_path ? `${IMG}/w500${r.poster_path}` : null,
+          backdrop: r.backdrop_path ? `${IMG}/w1280${r.backdrop_path}` : null,
+        };
+      });
+
+    const data = { trailer: pickTrailer(full.videos), runtime, cast, recommendations };
+    extrasCache.set(cacheKey, { at: Date.now(), data });
+    return data;
+  } catch (err) {
+    console.warn(`[tmdb] getExtras failed for ${type}/${tmdbId}:`, err.message);
+    return empty;
+  }
+}
+
+export default { isEnabled, lookupMovie, lookupShow, searchRaw, lookupById, getExtras };

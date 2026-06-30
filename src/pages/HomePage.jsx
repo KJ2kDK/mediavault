@@ -218,7 +218,7 @@ function BookmarkedSeries({ onNavigate, onPlaySeedbox }) {
   );
 }
 
-export default function HomePage({ searchQuery, onNavigate, seedboxReadonly }) {
+export default function HomePage({ searchQuery, onNavigate, seedboxReadonly, onOpenDetail }) {
   const { library: seedboxLib, connected, refreshLibrary, refetch } = useSeedboxLibrary();
   const [refreshing, setRefreshing] = useState(false);
   const [playingItem, setPlayingItem] = useState(null);
@@ -231,6 +231,10 @@ export default function HomePage({ searchQuery, onNavigate, seedboxReadonly }) {
 
   const handlePlay = (item) => {
     if (item.backend === 'seedbox') setPlayingItem(item);
+  };
+
+  const handleOpen = (item) => {
+    if (item.backend === 'seedbox') onOpenDetail?.(item);
   };
 
   // Bookmark state lookup — movies go to 'vod', shows go to 'series'.
@@ -254,7 +258,7 @@ export default function HomePage({ searchQuery, onNavigate, seedboxReadonly }) {
 
   return (
     <div className="animate-fade-in">
-      <HeroBanner items={DEMO_FEATURED} />
+      <HeroBanner items={DEMO_FEATURED} onOpenDetail={onOpenDetail} />
 
       {!connected && (
         <div className="mx-6 mb-6 px-4 py-3 rounded-lg bg-vault-card border border-vault-border flex items-center gap-3">
@@ -290,6 +294,7 @@ export default function HomePage({ searchQuery, onNavigate, seedboxReadonly }) {
           title={title}
           items={items}
           onPlay={handlePlay}
+          onOpen={handleOpen}
           onMatched={refetch}
           isBookmarked={isBookmarked}
           onBookmark={toggleBookmark}

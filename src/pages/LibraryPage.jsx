@@ -26,7 +26,7 @@ const DEMO_ALL = [
   { id: 116, title: 'Ripley', year: 2024, rating: '7.8', type: 'show', genre: 'Thriller' },
 ];
 
-export default function LibraryPage({ searchQuery }) {
+export default function LibraryPage({ searchQuery, onOpenDetail }) {
   const { library: seedboxLib, connected, refetch } = useSeedboxLibrary();
   const vodBk = useBookmarks('vod');
   const seriesBk = useBookmarks('series');
@@ -143,6 +143,7 @@ export default function LibraryPage({ searchQuery }) {
               item={item}
               size="md"
               onPlay={(i) => i.backend === 'seedbox' ? setPlayingItem(i) : null}
+              onOpen={(i) => i.backend === 'seedbox' ? onOpenDetail?.(i) : null}
               onMatched={refetch}
               isBookmarked={isBookmarked(item)}
               onBookmark={item.backend === 'seedbox' ? toggleBookmark : undefined}
@@ -155,6 +156,7 @@ export default function LibraryPage({ searchQuery }) {
           {items.map((item, i) => (
             <div
               key={item.id}
+              onClick={() => item.backend === 'seedbox' && onOpenDetail?.(item)}
               className="flex items-center gap-4 px-4 py-3 rounded-lg hover:bg-vault-card transition-colors group cursor-pointer"
             >
               <span className="text-xs text-vault-muted w-6 text-right">{i + 1}</span>

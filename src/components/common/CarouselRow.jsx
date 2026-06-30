@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from 'react';
 import MediaCard from './MediaCard';
 
-export default function CarouselRow({ title, items, cardSize = 'md', onPlay, onMatched, isBookmarked, onBookmark }) {
+export default function CarouselRow({ title, items, cardSize = 'md', onPlay, onOpen, onMatched, isBookmarked, onBookmark }) {
   const scrollRef = useRef(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(true);
@@ -30,7 +30,8 @@ export default function CarouselRow({ title, items, cardSize = 'md', onPlay, onM
 
   return (
     <div className="mb-8 group/row">
-      <h3 className="font-display text-xl tracking-wide text-white px-6 mb-3">
+      <h3 className="font-display text-xl tracking-wide text-white px-6 mb-3 flex items-center gap-2">
+        <span className="inline-block w-1 h-5 rounded-full bg-vault-accent/80" />
         {title}
       </h3>
       <div className="relative">
@@ -57,6 +58,7 @@ export default function CarouselRow({ title, items, cardSize = 'md', onPlay, onM
               item={item}
               size={cardSize}
               onPlay={onPlay}
+              onOpen={onOpen}
               onMatched={onMatched}
               isBookmarked={isBookmarked?.(item)}
               onBookmark={onBookmark && item.backend === 'seedbox' ? onBookmark : undefined}

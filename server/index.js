@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import authRoutes from './routes/auth.js';
 import { requireAuth } from './middleware/auth.js';
+import { enforcePermissions } from './middleware/permissions.js';
 import qbitRoutes from './routes/qbittorrent.js';
 import iptvRoutes, { scheduledIptvSync, healthCheckProviderHosts } from './routes/iptv.js';
 import rssRoutes from './routes/rss.js';
@@ -51,6 +52,9 @@ app.use('/api/rss-ingest', rssRoutes);
 
 // ── Auth wall — all API routes below require a valid JWT ─────────────────────
 app.use('/api', requireAuth);
+
+// ── RBAC wall — enforce per-user view grants + read-only seedbox ─────────────
+app.use('/api', enforcePermissions);
 
 // ── Protected API routes ─────────────────────────────────────────────────────
 app.use('/api/qbit', qbitRoutes);

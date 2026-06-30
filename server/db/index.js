@@ -363,6 +363,12 @@ try { db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
 // admins always have access to everything regardless of this value.
 try { db.exec('ALTER TABLE users ADD COLUMN allowed_views TEXT'); } catch {}
 
+// Migration: read-only seedbox grant. When 1, a non-admin user may browse and
+// stream the seedbox library but cannot trigger rescans or change metadata
+// (any mutating /api/seedbox call is blocked). Default 0 = full access for the
+// views they're granted. Admins are never restricted.
+try { db.exec('ALTER TABLE users ADD COLUMN seedbox_readonly INTEGER NOT NULL DEFAULT 0'); } catch {}
+
 // First user is always admin (runs every startup, idempotent)
 try {
   const first = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();

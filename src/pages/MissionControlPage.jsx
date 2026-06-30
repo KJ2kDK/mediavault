@@ -80,6 +80,16 @@ function UserManagement() {
     if (res.ok) loadUsers();
   };
 
+  // Toggle read-only seedbox access for a user.
+  const toggleSeedboxReadonly = async (user) => {
+    const res = await fetch(`/api/admin/users/${user.id}/seedbox-readonly`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ readonly: !user.seedboxReadonly }),
+    });
+    if (res.ok) loadUsers();
+  };
+
   const createUser = async () => {
     setError('');
     const res = await fetch('/api/admin/users', {
@@ -236,7 +246,22 @@ function UserManagement() {
                   );
                 })}
               </div>
-              <p className="text-[10px] text-vault-muted/60 mt-2">Click to grant or revoke. Changes apply on the user's next page load.</p>
+              <p className="text-[10px] text-vault-muted/60 mt-2">Click to grant or revoke a view. Server-enforced on every API call.</p>
+
+              {/* Read-only seedbox grant */}
+              <div className="mt-3 pt-3 border-t border-vault-border/50 flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-white">Read-only seedbox</p>
+                  <p className="text-[10px] text-vault-muted/60">Can browse & stream, but not rescan or change matches.</p>
+                </div>
+                <button
+                  onClick={() => toggleSeedboxReadonly(u)}
+                  className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${u.seedboxReadonly ? 'bg-vault-teal' : 'bg-vault-border'}`}
+                  title="Toggle read-only seedbox"
+                >
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${u.seedboxReadonly ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                </button>
+              </div>
             </div>
           );
         })()}

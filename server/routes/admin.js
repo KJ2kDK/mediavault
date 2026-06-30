@@ -69,15 +69,29 @@ router.get('/views', (_req, res) => {
 });
 
 router.get('/users', (req, res) => {
-  const rows = db.prepare('SELECT id, username, role, allowed_views, created_at FROM users ORDER BY id').all();
+  const rows = db.prepare('SELECT id, username, role, allowed_views, seedbox_readonly, created_at FROM users ORDER BY id').all();
   const users = rows.map((u) => ({
     id: u.id,
     username: u.username,
     role: u.role || 'user',
     created_at: u.created_at,
     allowedViews: resolveAllowedViews(u.role || 'user', u.allowed_views),
+    seedboxReadonly: !!u.seedbox_readonly,
   }));
   res.json({ users });
+});
+
+// PUT /api/admin/users/:id/seedbox-readonly — toggle read-only seedbox access
+router.put('/users/:id/seedbox-readonly', (req, res) => {
+  const { readonly } = req.body;
+  if (typeof readonly !== 'boolean') return res.status(400).json({ error: 'readonly must be a boolean' });
+  const target = db.prepare('SELECT id, role FROM users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  if ((target.role || 'user') === 'admin') {
+    return res.status(400).json({ error: 'Admins always have full seedbox access' });
+  }
+  db.prepare('UPDATE users SET seedbox_readonly = ? WHERE id = ?').run(readonly ? 1 : 0, req.params.id);
+  res.json({ ok: true, seedboxReadonly: readonly });
 });
 
 // PUT /api/admin/users/:id/views — set a user's authorized views

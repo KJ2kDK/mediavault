@@ -218,7 +218,7 @@ function BookmarkedSeries({ onNavigate, onPlaySeedbox }) {
   );
 }
 
-export default function HomePage({ searchQuery, onNavigate }) {
+export default function HomePage({ searchQuery, onNavigate, seedboxReadonly }) {
   const { library: seedboxLib, connected, refreshLibrary, refetch } = useSeedboxLibrary();
   const [refreshing, setRefreshing] = useState(false);
   const [playingItem, setPlayingItem] = useState(null);
@@ -265,7 +265,7 @@ export default function HomePage({ searchQuery, onNavigate }) {
         </div>
       )}
 
-      {connected && (
+      {connected && !seedboxReadonly && (
         <div className="flex items-center justify-end px-6 mb-2">
           <button
             onClick={handleRefresh}

@@ -50,13 +50,15 @@ router.post('/login', async (req, res) => {
 // GET /api/auth/me — check if token is valid
 router.get('/me', requireAuth, (req, res) => {
   // Re-fetch from DB in case role/permissions changed since the token was issued
-  const user = db.prepare('SELECT username, role, allowed_views FROM users WHERE id = ?').get(req.user.id);
+  const user = db.prepare('SELECT username, role, allowed_views, seedbox_readonly FROM users WHERE id = ?').get(req.user.id);
   if (!user) return res.status(401).json({ error: 'User not found' });
   const role = user.role || 'user';
   res.json({
     username: user.username,
     role,
     allowedViews: resolveAllowedViews(role, user.allowed_views),
+    // Admins always have full seedbox access; flag only restricts non-admins.
+    seedboxReadonly: role === 'admin' ? false : !!user.seedbox_readonly,
   });
 });
 

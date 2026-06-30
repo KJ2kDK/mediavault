@@ -29,6 +29,7 @@ export default function MainLayout({ onLogout }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [userRole, setUserRole] = useState(null);
   const [allowedViews, setAllowedViews] = useState(null); // null = loading / all
+  const [seedboxReadonly, setSeedboxReadonly] = useState(false);
   const [remotePlayItem, setRemotePlayItem] = useState(null);
 
   // Fetch role + view permissions on mount (manually attach token — global
@@ -40,6 +41,7 @@ export default function MainLayout({ onLogout }) {
       .then((data) => {
         if (data?.role) setUserRole(data.role);
         if (Array.isArray(data?.allowedViews)) setAllowedViews(data.allowedViews);
+        setSeedboxReadonly(!!data?.seedboxReadonly);
       })
       .catch(() => {});
   }, []);
@@ -122,6 +124,7 @@ export default function MainLayout({ onLogout }) {
               onNavigate={handleNavigate}
               navPayload={navPayload}
               onClearNavPayload={() => setNavPayload(null)}
+              seedboxReadonly={seedboxReadonly}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-6">

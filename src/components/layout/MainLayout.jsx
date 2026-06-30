@@ -51,9 +51,11 @@ export default function MainLayout({ onLogout }) {
   }, []);
 
   // If the current section isn't permitted, fall back to the first allowed view.
+  // 'detail' is always allowed: it's only opened from an already-allowed page.
   useEffect(() => {
     if (!allowedViews) return;
     if (section === 'mission-control') return; // role-gated separately
+    if (section === 'detail') return;
     if (!allowedViews.includes(section)) {
       setSection(allowedViews[0] || 'home');
     }

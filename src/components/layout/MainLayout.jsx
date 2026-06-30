@@ -28,16 +28,30 @@ export default function MainLayout({ onLogout }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [userRole, setUserRole] = useState(null);
+  const [allowedViews, setAllowedViews] = useState(null); // null = loading / all
   const [remotePlayItem, setRemotePlayItem] = useState(null);
 
-  // Fetch user role on mount (must manually attach token — global wrapper skips /api/auth/)
+  // Fetch role + view permissions on mount (manually attach token — global
+  // wrapper skips /api/auth/). allowedViews gates both the sidebar and pages.
   useEffect(() => {
     const token = localStorage.getItem('mediavault_token');
     fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
       .then((r) => r.ok ? r.json() : null)
-      .then((data) => { if (data?.role) setUserRole(data.role); })
+      .then((data) => {
+        if (data?.role) setUserRole(data.role);
+        if (Array.isArray(data?.allowedViews)) setAllowedViews(data.allowedViews);
+      })
       .catch(() => {});
   }, []);
+
+  // If the current section isn't permitted, fall back to the first allowed view.
+  useEffect(() => {
+    if (!allowedViews) return;
+    if (section === 'mission-control') return; // role-gated separately
+    if (!allowedViews.includes(section)) {
+      setSection(allowedViews[0] || 'home');
+    }
+  }, [allowedViews, section]);
 
   // onNavigate(section, payload?) — payload is passed to the target page once.
   const handleNavigate = (newSection, payload = null) => {
@@ -76,7 +90,13 @@ export default function MainLayout({ onLogout }) {
     onNotify: handleWsNotify,
   });
 
-  const PageComponent = PAGES[section] || HomePage;
+  // Gate page rendering: a user can only render an allowed view (mission-control
+  // stays role-gated). Prevents access via stale state or direct navigation.
+  const isAllowedSection =
+    section === 'mission-control'
+      ? userRole === 'admin'
+      : !allowedViews || allowedViews.includes(section);
+  const PageComponent = isAllowedSection ? (PAGES[section] || HomePage) : null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-vault-bg animate-fade-in">
@@ -87,6 +107,7 @@ export default function MainLayout({ onLogout }) {
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         onLogout={onLogout}
         isAdmin={userRole === 'admin'}
+        allowedViews={allowedViews}
       />
       <div className="flex-1 flex flex-col overflow-hidden">
         <TopBar
@@ -95,12 +116,19 @@ export default function MainLayout({ onLogout }) {
           onSearchChange={setSearchQuery}
         />
         <main className="flex-1 overflow-y-auto">
-          <PageComponent
-            searchQuery={searchQuery}
-            onNavigate={handleNavigate}
-            navPayload={navPayload}
-            onClearNavPayload={() => setNavPayload(null)}
-          />
+          {PageComponent ? (
+            <PageComponent
+              searchQuery={searchQuery}
+              onNavigate={handleNavigate}
+              navPayload={navPayload}
+              onClearNavPayload={() => setNavPayload(null)}
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-6">
+              <p className="text-vault-muted text-sm">You don't have access to this view.</p>
+              <p className="text-vault-muted/50 text-xs">Ask an admin to grant permission.</p>
+            </div>
+          )}
         </main>
       </div>
       <ChatPanel onNavigate={handleNavigate} onPlay={(action) => {

@@ -50,9 +50,11 @@ function SectionHeader({ title, action }) {
 // ── User Management ──────────────────────────────────────────────────────────
 function UserManagement() {
   const [users, setUsers] = useState([]);
+  const [views, setViews] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' });
   const [error, setError] = useState('');
+  const [editingViews, setEditingViews] = useState(null); // user id whose perms are open
 
   const loadUsers = useCallback(async () => {
     const res = await fetch('/api/admin/users');
@@ -60,6 +62,23 @@ function UserManagement() {
   }, []);
 
   useEffect(() => { loadUsers(); }, [loadUsers]);
+  useEffect(() => {
+    fetch('/api/admin/views').then((r) => r.ok ? r.json() : null).then((d) => { if (d?.views) setViews(d.views); }).catch(() => {});
+  }, []);
+
+  // Toggle a single view for a user and persist the new set.
+  const toggleView = async (user, viewId) => {
+    const current = user.allowedViews || [];
+    const next = current.includes(viewId)
+      ? current.filter((v) => v !== viewId)
+      : [...current, viewId];
+    const res = await fetch(`/api/admin/users/${user.id}/views`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ views: next }),
+    });
+    if (res.ok) loadUsers();
+  };
 
   const createUser = async () => {
     setError('');
@@ -168,6 +187,17 @@ function UserManagement() {
             >
               {u.role}
             </button>
+            {u.role !== 'admin' && (
+              <button
+                onClick={() => setEditingViews(editingViews === u.id ? null : u.id)}
+                className={`text-[10px] px-2 py-0.5 rounded font-medium uppercase tracking-wider transition-colors ${
+                  editingViews === u.id ? 'bg-vault-teal/20 text-vault-teal' : 'bg-vault-muted/15 text-vault-muted hover:text-vault-teal'
+                }`}
+                title="Authorize views"
+              >
+                Views
+              </button>
+            )}
             <button
               onClick={() => deleteUser(u)}
               className="p-1 rounded text-vault-muted/40 hover:text-red-400 hover:bg-red-400/10 transition-colors"
@@ -178,7 +208,38 @@ function UserManagement() {
               </svg>
             </button>
           </div>
-        ))}
+          ))}
+        {/* Per-user view authorization panel */}
+        {editingViews != null && (() => {
+          const u = users.find((x) => x.id === editingViews);
+          if (!u || u.role === 'admin') return null;
+          return (
+            <div key={`perm-${u.id}`} className="px-3 py-3 rounded-lg bg-vault-card border border-vault-teal/30">
+              <p className="text-[10px] uppercase tracking-widest text-vault-muted mb-2">
+                Authorized views for <span className="text-vault-teal font-bold">{u.username}</span>
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {views.map((v) => {
+                  const on = (u.allowedViews || []).includes(v.id);
+                  return (
+                    <button
+                      key={v.id}
+                      onClick={() => toggleView(u, v.id)}
+                      className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${
+                        on
+                          ? 'bg-vault-teal/20 text-vault-teal border-vault-teal/40'
+                          : 'bg-vault-surface text-vault-muted border-vault-border hover:text-white'
+                      }`}
+                    >
+                      {on ? '✓ ' : ''}{v.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-vault-muted/60 mt-2">Click to grant or revoke. Changes apply on the user's next page load.</p>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

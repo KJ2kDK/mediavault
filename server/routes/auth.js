@@ -2,6 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db/index.js';
 import { signToken, requireAuth } from '../middleware/auth.js';
+import { resolveAllowedViews } from '../config/views.js';
 
 const router = Router();
 
@@ -48,10 +49,15 @@ router.post('/login', async (req, res) => {
 
 // GET /api/auth/me — check if token is valid
 router.get('/me', requireAuth, (req, res) => {
-  // Re-fetch role from DB in case it was updated since the token was issued
-  const user = db.prepare('SELECT username, role FROM users WHERE id = ?').get(req.user.id);
+  // Re-fetch from DB in case role/permissions changed since the token was issued
+  const user = db.prepare('SELECT username, role, allowed_views FROM users WHERE id = ?').get(req.user.id);
   if (!user) return res.status(401).json({ error: 'User not found' });
-  res.json({ username: user.username, role: user.role || 'user' });
+  const role = user.role || 'user';
+  res.json({
+    username: user.username,
+    role,
+    allowedViews: resolveAllowedViews(role, user.allowed_views),
+  });
 });
 
 // GET /api/auth/status — check if any users exist (public)

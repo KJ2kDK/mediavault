@@ -358,6 +358,11 @@ db.exec(`
 // Migration: add role column for DBs created before it existed
 try { db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"); } catch {}
 
+// Migration: per-user view authorization. Stores a JSON array of allowed view
+// ids (e.g. ["home","livetv"]). NULL means "all views" (backward compatible);
+// admins always have access to everything regardless of this value.
+try { db.exec('ALTER TABLE users ADD COLUMN allowed_views TEXT'); } catch {}
+
 // First user is always admin (runs every startup, idempotent)
 try {
   const first = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();

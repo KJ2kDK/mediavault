@@ -9,6 +9,7 @@ import db from '../db/index.js';
 import { execSync } from 'child_process';
 import os from 'os';
 import bcrypt from 'bcryptjs';
+import { VIEWS, VIEW_IDS, resolveAllowedViews } from '../config/views.js';
 
 const router = Router();
 
@@ -63,9 +64,34 @@ router.get('/overview', (req, res) => {
 });
 
 // ── GET /api/admin/users ────────────────────────────────────────────────────
+router.get('/views', (_req, res) => {
+  res.json({ views: VIEWS });
+});
+
 router.get('/users', (req, res) => {
-  const users = db.prepare('SELECT id, username, role, created_at FROM users ORDER BY id').all();
+  const rows = db.prepare('SELECT id, username, role, allowed_views, created_at FROM users ORDER BY id').all();
+  const users = rows.map((u) => ({
+    id: u.id,
+    username: u.username,
+    role: u.role || 'user',
+    created_at: u.created_at,
+    allowedViews: resolveAllowedViews(u.role || 'user', u.allowed_views),
+  }));
   res.json({ users });
+});
+
+// PUT /api/admin/users/:id/views — set a user's authorized views
+router.put('/users/:id/views', (req, res) => {
+  const { views } = req.body;
+  if (!Array.isArray(views)) return res.status(400).json({ error: 'views must be an array' });
+  const target = db.prepare('SELECT id, role FROM users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  if ((target.role || 'user') === 'admin') {
+    return res.status(400).json({ error: 'Admins always have access to all views' });
+  }
+  const clean = VIEW_IDS.filter((id) => views.includes(id));
+  db.prepare('UPDATE users SET allowed_views = ? WHERE id = ?').run(JSON.stringify(clean), req.params.id);
+  res.json({ ok: true, allowedViews: clean });
 });
 
 // ── PUT /api/admin/users/:id/role ───────────────────────────────────────────

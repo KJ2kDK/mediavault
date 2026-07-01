@@ -11,3 +11,4 @@ dist/
 server/test-*.js
 .vscode/mcp.json
 .gg/
+.deploy-secret

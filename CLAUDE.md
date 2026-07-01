@@ -15,7 +15,10 @@ from a seedbox over SSH. No Plex dependency.
 - This machine: `NucBox_K16` (Windows). Dev server reads `src/` live; **production serves built `dist/`** — rebuild needed for prod.
 
 ## Production deploy (Hostinger VPS)
-- Live site: `media.baseinthe.cloud`. Deployed over SSH from this machine (ask the user to confirm host/user/credentials each session — not stored here).
+- Live site: `media.baseinthe.cloud`.
+- **SSH connection: `root@72.62.243.68` on port `22`** (NOT `srv1370.hstgr.io:65002` — that port times out).
+- Password is in **`.deploy-secret`** (gitignored, local-only — `VPS_HOST/PORT/USER/PASS`). Never commit it.
+- Password auth over automation needs `SSH_ASKPASS` (feed pass via an askpass script); plain background stdin fails.
 - Project on VPS: **`/docker/mediavault`**.
 - Served via **Docker + Traefik** (container `mediavault`, image `mediavault:latest`, internal port 3001).
 - Dockerfile builds the frontend inside the image (`npm run build`), so deploying = rebuild image.
